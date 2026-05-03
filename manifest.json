@@ -1,0 +1,87 @@
+{
+  "manifest_version": 3,
+  "name": "Feed Sorter (Instagram + TikTok)",
+  "version": "0.2.0",
+  "description": "Sort an Instagram or TikTok profile / explore feed by likes, views, comments, or outlier score.",
+  "permissions": ["storage", "declarativeNetRequest", "activeTab", "tabs", "alarms", "notifications", "downloads", "offscreen"],
+  "host_permissions": [
+    "https://www.instagram.com/*",
+    "https://i.instagram.com/*",
+    "https://www.tiktok.com/*",
+    "https://*.tiktok.com/*",
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "http://localhost:11434/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.instagram.com/*",
+        "https://www.tiktok.com/*",
+        "https://*.tiktok.com/*"
+      ],
+      "js": [
+        "src/lib/idb-umd.js",
+        "src/lib/jspdf-umd.js",
+        "src/lib/report.js",
+        "src/lib/cluster.js",
+        "src/lib/llm-bridge.js",
+        "src/lib/platform-runtime.js",
+        "src/lib/pipeline-runtime.js",
+        "src/store.js",
+        "src/lib/unified.js",
+        "src/sinks/index.js",
+        "src/sinks/sheets.js",
+        "src/sinks/airtable.js",
+        "src/sinks/notion.js",
+        "content.js"
+      ],
+      "css": ["overlay.css"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "Feed Sorter — open dashboard",
+    "default_popup": "src/dashboard/popup.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js"],
+      "matches": [
+        "https://www.instagram.com/*",
+        "https://www.tiktok.com/*",
+        "https://*.tiktok.com/*"
+      ]
+    },
+    {
+      "resources": [
+        "src/dashboard/index.html",
+        "src/dashboard/dashboard.js",
+        "src/dashboard/dashboard.css",
+        "src/lib/unified.js"
+      ],
+      "matches": ["<all_urls>"]
+    },
+    {
+      "resources": [
+        "vendor/transformers/transformers.min.js",
+        "vendor/transformers/ort-wasm.wasm",
+        "vendor/transformers/ort-wasm-simd.wasm",
+        "vendor/transformers/ort-wasm-threaded.wasm",
+        "vendor/transformers/ort-wasm-simd-threaded.wasm",
+        "offscreen.html"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
+  "declarative_net_request": {
+    "rule_resources": [
+      { "id": "tag", "enabled": true, "path": "rules.json" }
+    ]
+  }
+}

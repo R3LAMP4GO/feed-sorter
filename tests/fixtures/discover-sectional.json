@@ -1,0 +1,67 @@
+{
+  "sectional_items": [
+    {
+      "layout_type": "media_grid",
+      "layout_content": {
+        "medias": [
+          {
+            "media": {
+              "pk": "5001",
+              "id": "5001_1",
+              "code": "Eabc111",
+              "media_type": 1,
+              "taken_at": 1699940000,
+              "like_count": 9000,
+              "comment_count": 80,
+              "user": { "username": "alpha" },
+              "caption": { "text": "explore one" },
+              "image_versions2": {
+                "candidates": [{ "url": "https://cdn.example/e1.jpg", "width": 1080 }]
+              }
+            }
+          },
+          {
+            "media": {
+              "pk": "5002",
+              "id": "5002_1",
+              "code": "Eabc222",
+              "media_type": 2,
+              "product_type": "clips",
+              "taken_at": 1699950000,
+              "like_count": 22000,
+              "comment_count": 410,
+              "play_count": 1500000,
+              "user": { "username": "beta" },
+              "caption": { "text": "explore reel" },
+              "image_versions2": {
+                "candidates": [{ "url": "https://cdn.example/e2.jpg", "width": 1080 }]
+              },
+              "video_versions": [{ "url": "https://cdn.example/e2.mp4", "width": 720 }]
+            }
+          },
+          {
+            "media": {
+              "pk": "5003",
+              "id": "5003_1",
+              "code": "Eabc333",
+              "media_type": 8,
+              "taken_at": 1699960000,
+              "like_count": 1500,
+              "comment_count": 9,
+              "user": { "username": "gamma" },
+              "caption": { "text": "carousel" },
+              "carousel_media": [
+                {
+                  "image_versions2": {
+                    "candidates": [{ "url": "https://cdn.example/c1.jpg" }]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "more_available": false
+}

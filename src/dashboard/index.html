@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Feed Sorter — cross-platform outliers</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Feed Sorter · cross-platform outliers</h1>
+    <div class="actions">
+      <button id="reload" type="button">Reload</button>
+      <button id="settings-toggle" type="button">Settings</button>
+    </div>
+  </header>
+
+  <section id="settings" class="settings hidden">
+    <h2>Airtable source</h2>
+    <p class="muted">
+      Reads from the <code>UnifiedPosts</code> table populated by every Feed
+      Sorter extension. Credentials are stored locally in
+      <code>chrome.storage.local</code> under <code>fs.dashboard</code> and
+      never leave your browser.
+    </p>
+    <label>Personal Access Token <input id="cfg-token" type="password" placeholder="patXXXXXXXXXXXXXX..."></label>
+    <label>Base ID <input id="cfg-base" type="text" placeholder="appXXXXXXXXXXXXXX"></label>
+    <label>Table name <input id="cfg-table" type="text" value="UnifiedPosts"></label>
+    <div class="row">
+      <button id="cfg-save" type="button">Save &amp; reload</button>
+      <button id="cfg-import" type="button" title="Pull token / base from the IG extension's airtable sink config">Import from IG sink</button>
+    </div>
+  </section>
+
+  <section class="controls">
+    <label>Platform
+      <select id="f-platform">
+        <option value="">all</option>
+        <option value="instagram">instagram</option>
+        <option value="tiktok">tiktok</option>
+        <option value="youtube_shorts">youtube_shorts</option>
+      </select>
+    </label>
+    <label>Outlier metric
+      <select id="f-metric">
+        <option value="views">views</option>
+        <option value="likes">likes</option>
+        <option value="comments">comments</option>
+        <option value="shares">shares</option>
+      </select>
+    </label>
+    <label>Min outlier ×
+      <input id="f-min" type="number" value="2" min="0" step="0.5">
+    </label>
+    <label>Search
+      <input id="f-q" type="search" placeholder="@author or transcript">
+    </label>
+    <label>Sort
+      <select id="f-sort">
+        <option value="score">outlier score</option>
+        <option value="views">views</option>
+        <option value="likes">likes</option>
+        <option value="createTime">recent</option>
+      </select>
+    </label>
+  </section>
+
+  <section class="status" id="status">Idle.</section>
+
+  <section class="medians" id="medians"></section>
+
+  <main>
+    <table id="grid">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Platform</th>
+          <th>Author</th>
+          <th>Outlier</th>
+          <th>Views</th>
+          <th>Likes</th>
+          <th>Comments</th>
+          <th>Shares</th>
+          <th>Date</th>
+          <th>Hook</th>
+          <th>Link</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </main>
+
+  <script src="../lib/unified.js"></script>
+  <script src="dashboard.js"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+node_modules/
+test-results/
+.pw-profile/
+_metadata/
+.DS_Store
+*.log
+.env
+.env.*
+dist/
+build/
+coverage/
+playwright-report/
+.vscode/
+.idea/

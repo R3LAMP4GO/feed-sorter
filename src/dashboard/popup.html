@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Feed Sorter</title>
+<style>
+  body { font: 13px -apple-system, system-ui, sans-serif; margin: 12px; width: 220px; }
+  h1 { font-size: 13px; margin: 0 0 8px; }
+  button { width: 100%; padding: 8px; font-size: 13px; cursor: pointer; }
+  .hint { color: #666; font-size: 11px; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <h1>Feed Sorter</h1>
+  <button id="open">Open cross-platform dashboard</button>
+  <div class="hint">Reads the unified Airtable table written by every Feed&nbsp;Sorter extension (IG, TikTok, YT&nbsp;Shorts).</div>
+<script>
+  document.getElementById("open").addEventListener("click", () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL("src/dashboard/index.html") });
+    window.close();
+  });
+</script>
+</body>
+</html>

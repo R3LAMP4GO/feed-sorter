@@ -1,0 +1,45 @@
+{
+  "items": [
+    {
+      "media": {
+        "pk": "4001",
+        "id": "4001_1",
+        "code": "Rabc111",
+        "media_type": 2,
+        "product_type": "clips",
+        "taken_at": 1699920000,
+        "like_count": 5000,
+        "comment_count": 50,
+        "play_count": 250000,
+        "ig_play_count": 240000,
+        "user": { "username": "zachking" },
+        "caption": { "text": "reel one" },
+        "image_versions2": {
+          "candidates": [{ "url": "https://cdn.example/r1.jpg", "width": 1080 }]
+        },
+        "video_versions": [{ "url": "https://cdn.example/r1.mp4", "width": 720 }]
+      }
+    },
+    {
+      "media": {
+        "pk": "4002",
+        "id": "4002_1",
+        "code": "Rabc222",
+        "media_type": 2,
+        "product_type": "clips",
+        "taken_at": 1699930000,
+        "like_count": 12000,
+        "comment_count": 110,
+        "play_count": 800000,
+        "ig_play_count": 780000,
+        "user": { "username": "zachking" },
+        "caption": { "text": "reel two (banger)" },
+        "image_versions2": {
+          "candidates": [{ "url": "https://cdn.example/r2.jpg", "width": 1080 }]
+        },
+        "video_versions": [{ "url": "https://cdn.example/r2.mp4", "width": 720 }]
+      }
+    }
+  ],
+  "paging_info": { "more_available": false }
+}

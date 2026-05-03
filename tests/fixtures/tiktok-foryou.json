@@ -1,0 +1,64 @@
+{
+  "itemList": [
+    {
+      "id": "7401000000000000010",
+      "desc": "for you item #1",
+      "createTime": 1700100000,
+      "author": {
+        "id": "6700000000000000010",
+        "uniqueId": "creator_a",
+        "nickname": "Creator A"
+      },
+      "music": {
+        "id": "7000000000000000010",
+        "title": "original sound - creator_a",
+        "authorName": "creator_a",
+        "original": true
+      },
+      "video": {
+        "id": "7401000000000000010",
+        "duration": 30,
+        "cover": "https://p16.tiktokcdn.example/f1.jpg",
+        "playAddr": "https://v16.tiktokcdn.example/f1.mp4"
+      },
+      "stats": {
+        "diggCount": 1000,
+        "shareCount": 20,
+        "commentCount": 30,
+        "playCount": 80000,
+        "collectCount": 10
+      }
+    },
+    {
+      "id": "7401000000000000011",
+      "desc": "for you item #2",
+      "createTime": 1700100600,
+      "author": {
+        "id": "6700000000000000011",
+        "uniqueId": "creator_b",
+        "nickname": "Creator B"
+      },
+      "music": {
+        "id": "7000000000000000011",
+        "title": "Some Track",
+        "authorName": "An Artist",
+        "original": false
+      },
+      "video": {
+        "id": "7401000000000000011",
+        "duration": 45,
+        "cover": "https://p16.tiktokcdn.example/f2.jpg",
+        "playAddr": "https://v16.tiktokcdn.example/f2.mp4"
+      },
+      "stats": {
+        "diggCount": 50000,
+        "shareCount": 200,
+        "commentCount": 500,
+        "playCount": 1500000,
+        "collectCount": 250
+      }
+    }
+  ],
+  "hasMore": true,
+  "cursor": "60"
+}

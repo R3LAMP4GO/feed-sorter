@@ -1,0 +1,68 @@
+{
+  "itemList": [
+    {
+      "id": "7301000000000000001",
+      "desc": "first tiktok of khaby #funny",
+      "createTime": 1700000001,
+      "author": {
+        "id": "6749999999999999999",
+        "uniqueId": "khaby.lame",
+        "nickname": "Khaby"
+      },
+      "music": {
+        "id": "7000000000000000001",
+        "title": "original sound - khaby.lame",
+        "authorName": "khaby.lame",
+        "original": true,
+        "playUrl": "https://sf16.tiktokcdn.example/m1.mp3"
+      },
+      "video": {
+        "id": "7301000000000000001",
+        "duration": 22,
+        "cover": "https://p16.tiktokcdn.example/v1.jpg",
+        "dynamicCover": "https://p16.tiktokcdn.example/v1d.jpg",
+        "playAddr": "https://v16.tiktokcdn.example/v1.mp4",
+        "downloadAddr": "https://v16.tiktokcdn.example/v1-dl.mp4"
+      },
+      "stats": {
+        "diggCount": 12345,
+        "shareCount": 200,
+        "commentCount": 100,
+        "playCount": 500000,
+        "collectCount": 80
+      },
+      "shareUrl": "https://www.tiktok.com/@khaby.lame/video/7301000000000000001"
+    },
+    {
+      "id": "7301000000000000002",
+      "desc": "second one (banger) #viral",
+      "createTime": 1700000500,
+      "author": {
+        "id": "6749999999999999999",
+        "uniqueId": "khaby.lame",
+        "nickname": "Khaby"
+      },
+      "music": {
+        "id": "7000000000000000002",
+        "title": "Some Song",
+        "authorName": "Some Artist",
+        "original": false
+      },
+      "video": {
+        "id": "7301000000000000002",
+        "duration": 14,
+        "cover": "https://p16.tiktokcdn.example/v2.jpg",
+        "playAddr": "https://v16.tiktokcdn.example/v2.mp4"
+      },
+      "stats": {
+        "diggCount": 98765,
+        "shareCount": 1100,
+        "commentCount": 540,
+        "playCount": 4200000,
+        "collectCount": 600
+      }
+    }
+  ],
+  "hasMore": false,
+  "cursor": "0"
+}

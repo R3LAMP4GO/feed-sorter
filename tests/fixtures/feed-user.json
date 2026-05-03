@@ -1,0 +1,39 @@
+{
+  "items": [
+    {
+      "pk": "3001",
+      "id": "3001_1",
+      "code": "Cabc111",
+      "media_type": 1,
+      "taken_at": 1699900000,
+      "like_count": 1234,
+      "comment_count": 12,
+      "play_count": 0,
+      "user": { "username": "zachking" },
+      "caption": { "text": "post one" },
+      "image_versions2": {
+        "candidates": [{ "url": "https://cdn.example/img1.jpg", "width": 1080 }]
+      }
+    },
+    {
+      "pk": "3002",
+      "id": "3002_1",
+      "code": "Cabc222",
+      "media_type": 2,
+      "product_type": "feed",
+      "taken_at": 1699910000,
+      "like_count": 5678,
+      "comment_count": 88,
+      "play_count": 99000,
+      "view_count": 99000,
+      "user": { "username": "zachking" },
+      "caption": { "text": "post two (video)" },
+      "image_versions2": {
+        "candidates": [{ "url": "https://cdn.example/img2.jpg", "width": 1080 }]
+      },
+      "video_versions": [{ "url": "https://cdn.example/v2.mp4", "width": 720 }]
+    }
+  ],
+  "num_results": 2,
+  "more_available": false
+}

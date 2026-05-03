@@ -1,0 +1,92 @@
+[
+  {
+    "id": 1, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "ig-feed" }
+    ]},
+    "condition": {
+      "urlFilter": "||instagram.com/api/v1/feed/user/",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
+    "id": 2, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "ig-clips" }
+    ]},
+    "condition": {
+      "urlFilter": "||instagram.com/api/v1/clips/user/",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
+    "id": 3, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "ig-explore" }
+    ]},
+    "condition": {
+      "urlFilter": "||instagram.com/api/v1/discover/web/explore_grid/",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
+    "id": 4, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "ig-graphql" }
+    ]},
+    "condition": {
+      "urlFilter": "||instagram.com/graphql/query",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
+    "id": 5, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "ig-explore" }
+    ]},
+    "condition": {
+      "urlFilter": "||instagram.com/api/v1/discover/",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
+    "id": 6, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "tt-profile" }
+    ]},
+    "condition": {
+      "urlFilter": "||tiktok.com/api/post/item_list/",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
+    "id": 7, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "tt-foryou" }
+    ]},
+    "condition": {
+      "urlFilter": "||tiktok.com/api/recommend/item_list/",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
+    "id": 8, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "tt-explore" }
+    ]},
+    "condition": {
+      "urlFilter": "||tiktok.com/api/explore/item_list/",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
+    "id": 9, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "tt-related" }
+    ]},
+    "condition": {
+      "urlFilter": "||tiktok.com/api/related/item_list/",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  }
+]

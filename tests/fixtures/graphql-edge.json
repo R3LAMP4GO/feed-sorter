@@ -1,0 +1,44 @@
+{
+  "data": {
+    "user": {
+      "edge_owner_to_timeline_media": {
+        "count": 2,
+        "edges": [
+          {
+            "node": {
+              "id": "6001",
+              "shortcode": "Gabc111",
+              "__typename": "GraphImage",
+              "taken_at_timestamp": 1699970000,
+              "edge_media_preview_like": { "count": 333 },
+              "edge_media_to_comment": { "count": 7 },
+              "edge_media_to_caption": {
+                "edges": [{ "node": { "text": "graphql post" } }]
+              },
+              "owner": { "username": "zachking" },
+              "display_url": "https://cdn.example/g1.jpg",
+              "thumbnail_src": "https://cdn.example/g1-thumb.jpg"
+            }
+          },
+          {
+            "node": {
+              "id": "6002",
+              "shortcode": "Gabc222",
+              "__typename": "GraphVideo",
+              "taken_at_timestamp": 1699980000,
+              "edge_liked_by": { "count": 1024 },
+              "edge_media_to_parent_comment": { "count": 18 },
+              "video_view_count": 50000,
+              "edge_media_to_caption": {
+                "edges": [{ "node": { "text": "graphql video" } }]
+              },
+              "owner": { "username": "zachking" },
+              "display_url": "https://cdn.example/g2.jpg",
+              "video_url": "https://cdn.example/g2.mp4"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
