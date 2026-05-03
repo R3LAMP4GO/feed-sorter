@@ -948,9 +948,6 @@
       </div>
       <div class="fs-tabs" data-tabs>
         <button class="fs-tab" data-tab="current">Current</button>
-        <button class="fs-tab" data-tab="sounds">Sounds</button>
-        <button class="fs-tab" data-tab="niche">Niche</button>
-        <button class="fs-tab" data-tab="settings">Settings</button>
       </div>
       <div class="fs-section">
         <div class="fs-section-label">Sort</div>
@@ -966,16 +963,6 @@
               <option value="recent">Most recent</option>
             </select>
           </label>
-          <label>Group by
-            <select data-ctl="groupBy">
-              <option value="none">None</option>
-              <option value="status">Status</option>
-              <option value="hookType">Hook type</option>
-              <option value="topic">Topic</option>
-              <option value="angle">Angle</option>
-              <option value="coverWinRate">Cover win-rate</option>
-            </select>
-          </label>
           <label>Outlier metric
             <select data-ctl="metric">
               <option value="likes">Likes</option>
@@ -989,9 +976,6 @@
       <div class="fs-section">
         <div class="fs-section-label">Filter</div>
         <div class="fs-section-grid">
-          <label class="fs-search-label">Search
-            <input data-ctl="q" type="search" placeholder="Search captions, @authors…" autocomplete="off" />
-          </label>
           <label data-for="surface">Surface
             <select data-ctl="surface">
               <option value="all">All on this page</option>
@@ -1020,35 +1004,8 @@
               <option value="1000">1000</option>
             </select>
           </label>
-          <label>Data
-            <select data-ctl="scope">
-              <option value="session">This session</option>
-              <option value="alltime">All-time (IDB)</option>
-            </select>
-          </label>
         </div>
         <div class="fs-chips" data-chips>
-          <button class="fs-chip" data-chip="pinnedOnly" type="button" title="Show only pinned posts">📌 Pinned only</button>
-          <select data-ctl="statusFilter" title="Filter by status">
-            <option value="">Status: any</option>
-            <option value="idea">Idea</option>
-            <option value="drafted">Drafted</option>
-            <option value="posted">Posted</option>
-            <option value="skip">Skip</option>
-          </select>
-          <select data-ctl="hasFilter" title="Filter by metadata presence">
-            <option value="">Has: any</option>
-            <option value="note">Note</option>
-            <option value="transcript">Transcript</option>
-            <option value="ai">Analysis</option>
-          </select>
-          <details class="fs-chips-more">
-            <summary>More…</summary>
-            <button class="fs-chip" data-chip="hasFace" type="button" title="Cover has at least one face">😊 Has face</button>
-            <button class="fs-chip" data-chip="hasTextOverlay" type="button" title="Cover has graphic text overlay">🅱️ Text overlay</button>
-            <button class="fs-chip" data-chip="compositionCloseup" type="button" title="Closeup composition">🔍 Closeup</button>
-            <button class="fs-chip" data-chip="compositionTextHeavy" type="button" title="Text-heavy composition">📝 Text-heavy</button>
-          </details>
           <button class="fs-chip fs-chip-ai" data-chip="hookType" type="button" hidden data-hooktype-chip>hook</button>
           <button class="fs-chip fs-chip-ai" data-chip="topic" type="button" hidden data-topic-chip>topic</button>
           <button class="fs-chip fs-chip-ai" data-chip="angle" type="button" hidden data-angle-chip>angle</button>
@@ -1070,8 +1027,7 @@
       <div class="fs-batch" data-batch hidden>
         <span class="fs-batch-count" data-batch-count>0 selected</span>
         <button class="fs-icon-btn" data-act="batch-download" title="Download selected videos">Download</button>
-        <button class="fs-icon-btn" data-act="batch-compare" title="Compare 2–3 selected posts">Compare</button>
-        <button class="fs-icon-btn" data-act="batch-csv" title="Export selected to CSV">CSV</button>
+        <button class="fs-icon-btn" data-act="batch-sync" title="Sync selected to webapp">Sync</button>
         <button class="fs-icon-btn" data-act="batch-copy" title="Copy URLs to clipboard">Copy URLs</button>
         <button class="fs-icon-btn" data-act="batch-clear" title="Clear selection">Clear</button>
         <span class="fs-batch-sep"></span>
@@ -1097,27 +1053,8 @@
       <div class="fs-footer">
         <button class="fs-icon-btn" data-act="collect">Collect all</button>
         <button class="fs-icon-btn" data-act="stop">Stop</button>
-        <button class="fs-icon-btn" data-act="csv">CSV</button>
-        <span class="fs-pl-launch">
-          <button class="fs-icon-btn fs-pl-btn" data-act="pipeline-run" title="Run the full local pipeline (download → transcribe → diagnose → rewrite → README) on the top N outliers. All AI runs locally.">✨ Repurpose top</button>
-          <input class="fs-bulk-thresh" data-ctl="pipelineTopN" type="number" min="1" max="50" step="1" value="10" />
-          <span class="fs-pl-eta" data-pl-eta hidden></span>
-        </span>
-        <span class="fs-bulk">
-          <select data-ctl="bulkAction" title="Pick what to run on rows with score ≥ threshold">
-            <option value="download">Download videos</option>
-            <option value="audio">Download audio</option>
-            <option value="transcribe">Transcribe</option>
-            <option value="rewrite">Generate rewrites (md)</option>
-          </select>
-          <span class="fs-bulk-cond">where score ≥</span>
-          <input class="fs-bulk-thresh" data-ctl="outlierThresh" type="number" min="1" step="0.5" />
-          <button class="fs-icon-btn" data-act="bulk-run" title="Run the chosen action against the current filtered view">Run</button>
-          <span class="fs-bulk-status" data-bulk-status hidden></span>
-          <span class="fs-bulk-status" data-tx-status hidden></span>
-          <span class="fs-bulk-status" data-rw-batch-status hidden></span>
-          <button class="fs-icon-btn fs-bulk-cancel" data-act="bulk-cancel-any" title="Cancel batch" hidden>Cancel</button>
-        </span>
+        <button class="fs-icon-btn" data-act="sync-webapp" title="Sync collected posts to the webapp">Sync to webapp</button>
+        <span class="fs-bulk-status" data-sync-status hidden></span>
       </div>
       <div class="fs-sounds-panel" data-sounds-panel hidden>
         <div class="fs-sounds-bar">
@@ -1697,6 +1634,11 @@
         }
       }
       if (act === "csv") { logInfo("export.csv", { rows: filtered().length }); exportCSV(); }
+      if (act === "sync-webapp" || act === "batch-sync") {
+        e.preventDefault();
+        setStatus("sync to webapp not configured yet");
+        logWarn("sync.webapp.todo", { msg: "webapp endpoint not yet wired" });
+      }
       if (act === "export-logs") { exportLogs().catch((err) => logError("export.logs.fail", err)); }
       if (act === "collect") startCollect("button");
       if (act === "stop") stopCollect("button");
