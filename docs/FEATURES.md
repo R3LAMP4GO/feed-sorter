@@ -1,345 +1,257 @@
-# Feed Sorter — Full Feature Inventory
+# Feature Inventory
 
-This document is an exhaustive map of every user-facing feature currently
-shipped in the IG/TikTok overlay (`content.js` + `overlay.css`), the popup
-dashboard (`src/dashboard/`), the service worker (`background.js`), and the
-local sidecars (Ollama, faster-whisper). It exists so we can audit what is
-actually used vs. what is noise.
+A complete map of every user-facing feature currently in the extension,
+plus a recommendation for **where each one should live** once the web
+app (`web/`) is in production.
 
-Legend: **🟢 core** (most users hit this) · **🟡 power** (useful but niche) ·
-**🔴 fringe** (debatable; UI cost > value) · **⚙ infra** (settings/wiring).
+Legend:
 
----
+| Symbol | Meaning |
+|--------|---------|
+| 🟢 | Stays in the extension |
+| 🔵 | Moves to the web app |
+| 🟡 | Lives in **both** (extension calls it; web app exposes the polished UI) |
+| 🔴 | Delete / deprecate |
 
-## 1. Header (overlay top bar)
+Tier column reflects what we should charge for:
 
-| Control | What it does | Tier |
-|--|--|--|
-| `Feed Sorter · IG · <scope>` | Title — shows platform + page-scope (profile/explore/foryou) | 🟢 |
-| 📡 Radar | Opens the **Outlier Radar** floating panel (cross-creator outliers from IDB, all-time) | 🟡 |
-| 📄 Report | Generates a **PDF profile report** (jspdf) — only visible on a profile page | 🔴 |
-| 🔗 Share | Copies a `#hash`-encoded view link (sort/filter state is serialized to URL) | 🟡 |
-| ❓ Help | Keyboard-shortcut cheat sheet | 🟢 |
-| – Collapse | Minimizes overlay | 🟢 |
-| ⟳ Re-scan | Clears in-mem `posts` and re-pulls page | 🟢 |
+| Tier   | Price guess     | What unlocks |
+|--------|-----------------|--------------|
+| Free   | $0              | Extension capture + 30-day history + BYO-Ollama |
+| Pro    | $19–29 / mo     | Hosted AI, unlimited history, watchlists, scheduled exports |
+| Team   | $99–199 / mo    | 3 seats, shared workspace, Slack/Discord digests |
 
 ---
 
-## 2. Tabs
+## 1. Capture (data ingestion)
 
-The overlay has **4 tabs**. Default active = `current`. (Down from 7 —
-Pinned, Patterns, and Signals were folded into other surfaces.)
-
-1. **Current** — main list (sort + filter + rows). 🟢
-2. **Sounds** — trending audio aggregation (TT-heavy; IG only has audio when reels expose it). 🟡
-3. **Niche** — tracked-creator watchlist (per-creator stats, voice fingerprint, auto-cluster, auto-rescrape). 🟡
-4. **Settings** — config, organised as an accordion (see §9). ⚙
-
-**Header bell (🔔 Signals)** — replaces the old Signals tab. Visible only
-when there are stored signals or notify is on. Click → floating drawer
-with filters + rescan/clear. Unread count rendered as a badge.
-
-**Pinned** is now exclusively the `📌 Pinned only` chip on Current
-(legacy `view=pinned` shareable links auto-coerce to that). **Patterns**
-is now a `Hook × Topic clusters` block inside the Stats panel.
+| Feature | Location now | Where it should live | Tier | Notes |
+|---|---|---|---|---|
+| Intercept Instagram feed/profile/reels/explore APIs | `injected.js` + `content.js` | 🟢 Extension only | Free | Cannot be done anywhere else — MV3 main-world hook is the moat. |
+| Intercept TikTok profile/foryou/explore/related APIs | `injected.js` + `src/lib/parser-tiktok.js` | 🟢 Extension only | Free | Same. |
+| Auto-scroll harvester ("Collect all") | `content.js` `startCollect()` | 🟢 Extension only | Free | Triggers the page's own pagination. Surface a button + progress in overlay. |
+| Per-page scope detection (profile / reels / explore / foryou) | `src/lib/scope.js`, `scope-tiktok.js`, `platform-runtime.js` | 🟢 Extension only | Free | Tells the rest of the system what the user is looking at. |
+| Unified row schema (`makeUnified`) | `src/lib/unified.js` | 🟡 Both | Free | Same code on both sides. Web app uses the typed mirror at `web/src/lib/unified.ts`. |
+| Bulk POST to `/api/ingest` | (not built yet) | 🟢 Extension calls 🔵 Web app | Free | New: extension fires every batch through the bridge. |
 
 ---
 
-## 3. Sort & Filter (Current tab)
+## 2. Storage
 
-### Sort by
-`outlier`, `velocity (views/hr)`, `likes`, `views`, `comments`,
-`cpr (comments/1k likes)`, `recent`. **7 options.** 🟢
-
-### Group by (sibling control)
-`none`, `status`, `hookType`, `topic`, `angle`, `coverWinRate`. When
-active, the row list is pre-sorted by the group key and a section
-header (`.fs-group-h`) is emitted between groups. The `Limit` slice is
-applied **before** grouping so high-N groups can’t crowd out low-N
-groups below the cap.
-
-### Outlier metric
-`likes | views | comments | velocity` — what the outlier ratio divides by. 🟢
-
-### Filter row
-- **Search** (captions, @authors, transcripts, notes, tags). 🟢
-- **Surface** (all / profile / reels / explore). 🟢
-- **Date range** (all / 1w / 1m / 3m / 6m / 1y). 🟢
-- **Limit** (0 / 25 / 50 / 100 / 200 / 1000). 🟢
-- **Data scope** (`session` vs `alltime` IDB). 🟢
-
-### Filter chips / selects (compact strip below dropdowns)
-- **📌 Pinned only** chip
-- **Status** select — any / Idea / Drafted / Posted / Skip
-- **Has** select — any / Note / Transcript / Analysis (single value;
-  drives the underlying `hasNote` / `hasTranscript` / `hasAi` booleans
-  so `filtered()` is unchanged)
-- **More…** disclosure (cover-vision filters): 😊 Has face / 🅱️
-  Text overlay / 🔍 Closeup / 📝 Text-heavy
-- Dynamic chips (only when an AI filter is active): `hook` / `topic` /
-  `angle` / `#tag`
+| Feature | Location now | Where it should live | Tier | Notes |
+|---|---|---|---|---|
+| Local IndexedDB (`feed-sorter`, v5) | `src/store.js` | 🟡 Both (extension as cache, web as source of truth) | Free | Keep IDB so the overlay works offline and on slow networks. Treat it as a write-through cache to the server. |
+| Posts store (~50 fields) | `src/store.js` `posts` | 🔵 Postgres (`posts` table in `web/`) | Free / Pro for >30d | History retention is the easiest paywall lever. |
+| Creators / niche store | `src/store.js` `creators` | 🔵 Postgres | Pro | Watchlists need a server anyway (cron). |
+| Audio (sounds) store | `src/store.js` `audio` | 🔵 Postgres | Pro | Trending sound rollup is server work. |
+| Voice fingerprint store | `src/store.js` `voice` | 🔵 Postgres | Pro | One row per creator, used by Repurpose. |
+| Rewrites cache | `src/store.js` `rewrites` | 🔵 Postgres | Pro | Tied to LLM output — server owns this once hosted AI is on. |
+| Pipeline steps log | `src/store.js` `pipeline_steps` | 🔵 Postgres | Pro | Audit trail for the Repurpose pipeline. |
+| Signals (cross-creator hook reuse) | `src/store.js` `signals` | 🔵 Postgres | Pro | Real-time alerts need a server. |
 
 ---
 
-## 4. Stats sidebar
+## 3. Sorting · filtering · grouping
 
-`<details>` block ("📊 Stats") above the list. Aggregations:
-- counts (posts / authors / analyzed)
-- top hooks / top topics / top angles (LLM-derived, click to filter)
-- "Analyze top N" button (bulk hook+topic+angle pass with Ollama)
-- "Diagnose top N outliers" (multimodal cover diagnosis)
-- "Analyze covers top N" (face/composition vision)
+All of this is currently in `content.js` overlay. None of it is **moat**;
+all of it is much nicer with a real UI.
 
-🟡 — useful, but overlaps with the **Patterns** tab and the dynamic chips.
-
----
-
-## 5. Pinned drawer
-
-`<details>` ("📌 Pinned · N") between stats and list. 🔴 — duplicates the
-**Pinned tab** _and_ the **Pinned only** chip. Three entry points for the
-same data.
-
----
-
-## 6. Row (per post)
-
-Each row in Current renders:
-- thumbnail (hover-to-preview video if `videoUrl`)
-- author handle + age + surface badge
-- caption (truncated)
-- stat strip: ❤ likes · ▶ views · 💬 comments · ⚡ velocity · 🎯 outlier ×
-- action buttons (right side):
-  - **📌 pin/unpin**
-  - **⬇ download** (single)
-  - **🎙️ transcribe** (sidecar)
-  - **🧠 analyze** (hook+topic+angle, Ollama)
-  - **🅱 cover** (vision: face/text-overlay/closeup)
-  - **🔬 diagnose** (multimodal: why this post outlier'd)
-  - **✍ repurpose** (4-platform rewrites)
-  - **expand** (note/tag/status editor)
-- expanded panel: note · tags · status (idea/drafted/posted/skip) · transcript · AI panel
-
-🟢 thumbnail/stats/expand. 🟡 transcribe/analyze/repurpose/diagnose. 🔴 cover.
+| Feature | Location now | Where it should live | Tier |
+|---|---|---|---|
+| Sort: outlier score | overlay + `src/lib/scoring.js` | 🔵 Web app | Free |
+| Sort: velocity (views/hr) | overlay | 🔵 Web app | Free |
+| Sort: likes / views / comments / CPR / recent | overlay | 🔵 Web app | Free |
+| Group by: status / hookType / topic / angle / coverWinRate | overlay | 🔵 Web app | Free |
+| Outlier metric picker | overlay | 🔵 Web app | Free |
+| Search captions / @authors | overlay | 🔵 Web app | Free |
+| Surface filter (profile / reels / explore) | overlay | 🟢 Extension (page-scoped) + 🔵 Web (cross-session) | Free |
+| Date range filter | overlay | 🔵 Web app | Free |
+| Limit (25/50/100/…) | overlay | 🔵 Web app | Free |
+| Data scope (session vs all-time) | overlay | 🔴 Becomes obsolete once server is the source of truth | — |
+| Status filter (idea / drafted / posted / skip) | overlay | 🔵 Web app | Free |
+| "Has note / transcript / AI" filter | overlay | 🔵 Web app | Free |
+| Cover-attribute chips (Has face / Text overlay / Closeup / Text-heavy) | overlay (removed on `explore-only`) | 🔵 Web app | Pro (depends on cover analysis) |
+| Hashtag / hookType / topic / angle chips | overlay | 🔵 Web app | Pro |
+| Pinned-only filter | overlay | 🔵 Web app | Free |
 
 ---
 
-## 7. Batch bar
+## 4. Per-row actions
 
-Appears when ≥1 row selected. Buttons: **Download · Compare · CSV · Copy
-URLs · Clear · Select all visible · Select none**. 🟢
-
----
-
-## 8. Footer
-
-Footer crams **5 grouped controls** into a single horizontal strip:
-
-1. **Collect all** / **Stop** / **CSV** — base footer. 🟢
-2. **✨ Repurpose top N** — pipeline (download → transcribe → diagnose → rewrite → README per post). 🟡
-3. **Download outliers ≥ N×** + threshold input + cancel. 🟢
-4. **🎙️ Transcribe outliers ≥ N×** + cancel. 🟡
-5. **✍ Repurpose top N** + topN input. 🟡 *(plain rewrite — different from button 2 which is the full pipeline. Naming collision is a known pain point.)*
-
-This footer is the densest area of the UI and the source of most confusion.
+| Feature | Location now | Where it should live | Tier |
+|---|---|---|---|
+| Pin post | overlay | 🟡 Both (sync via API) | Free |
+| Set status (idea / drafted / posted / skip) | overlay | 🟡 Both | Free |
+| Add note / tags | overlay | 🟡 Both | Free |
+| Open original on platform | overlay | 🟡 Both | Free |
+| Download video | overlay → `background.js` `download` | 🟢 Extension (CORS + cookie auth) | Free |
+| Download audio | overlay → `background.js` | 🟢 Extension | Free |
+| Copy URL / CSV / batch copy | overlay | 🔵 Web app | Free |
+| Compare 2–3 posts side-by-side | overlay (modal) | 🔵 Web app **only** | Free |
 
 ---
 
-## 9. Per-tab panels
+## 5. Local AI analysis (Ollama / Gemma)
 
-### Sounds panel
-- chips: `Original sounds only`, `Music only`, `Min uses ≥ 3`
-- **⟳ Recompute** trending
-- "Filtering by sound: …" cleared via ×
-- list rows: tag (orig/music) · title · artist · ▶ uses · `med ×` · `growth %`
+Currently all run in the content script via `chat()` → background → Ollama.
+**This is the biggest "should-it-move?" question.** Two answers:
 
-### Signals panel
-- inputs: `Min similarity`, `Min historical score`, `Max age (days)`
-- chip: `Unread only`
-- **⟳ Rescan** / **Clear**
-- rows: new-post ↔ historical-outlier pair with similarity %, mark-as-read
+- **Power users (BYO Ollama)**: keep it triggerable from the extension *and* the web app via a local-AI toggle. Privacy moat.
+- **Everyone else**: hosted AI on the web app. Charge for it. Most users will never run Ollama.
 
-
-### Niche panel
-- bar: `+ Add current profile` · `Re-scan stale` · `⚙ Auto-cluster`
-- manual add row: `@username` + niche label + Add
-- batch bar: `Compare 2-3 selected` · `Clear`
-- per-creator row: select · @name · 📌 niche-pin · last-scrape age · ⟳ rescan · 📄 PDF report · ✕ remove · post count + median likes · 🎙 voice fingerprint button + meta · niche label / interval / auto checkbox
-
-### Settings panel (accordion — each section is a `<details class="fs-set-section">`; first section open by default)
-1. **Outlier Radar defaults** — minScore / radarRange / radarLimit
-2. **Signals** — notify / minSim / minHistScore / maxAgeDays
-3. **Bulk download** — bulkZip toggle (JSZip)
-4. **Transcription sidecar** — URL · status · Check
-5. **Local AI (Ollama)** — endpoint · model · vision model · concurrency · status · Check · Clear cache
-6. **My voice (for repurpose)** — IG handle
-7. **Storage** — IDB usage info
-8. **Outbound webhooks** — Generic / Slack / Discord URLs · auto-on-collect · Test ping · Send view · Send top-5 to Slack · Send top-5 to Discord · Run weekly digest now
-9. **Direct sinks** — Sheets / Airtable / Notion (each a nested `<details>`: enable · creds · auto-on-collect · Test · Sync now)
-
-### Per-row buttons
-`📍 pin` · `⬇ download video` · **`🎵 download audio`** (new — disabled
-when `audio.downloadUrl` is empty, e.g. licensed IG music) · `🧠
-analyze` · `✍ repurpose` · `🎙 transcribe`.
-
-### Footer bulk control (single dropdown)
-`Bulk action` select (`Download videos` / `Download audio` /
-`Transcribe` / `Generate rewrites (md)`) + `where score ≥ N` threshold
-input + `Run` + shared `Cancel`. The pipeline `✨ Repurpose top N`
-button is unchanged.
+| Feature | Location now | Where it should live | Tier |
+|---|---|---|---|
+| Hook fingerprint (text classifier) | `src/lib/hooks.js` + `src/analysis/post-analysis.js` | 🟡 Both, but UI on web | Pro (hosted) / Free (BYO) |
+| Cover diagnosis (face / text / composition) | `src/analysis/cover-analysis.js` (vision model) | 🔵 Web app | Pro |
+| Outlier diagnosis (why did this hit?) | `src/analysis/diagnose.js` | 🔵 Web app | Pro |
+| Voice fingerprint per creator | `src/analysis/voice-fingerprint.js` | 🔵 Web app | Pro |
+| Rewrites (caption variations, hooks, scripts) | `src/analysis/rewrite.js` | 🔵 Web app | Pro |
+| Niche auto-clustering (MiniLM embeddings) | `background.js` + `src/lib/cluster.js` + `offscreen.js` | 🔵 Web app | Pro |
+| AI cache | local IDB | 🔵 Postgres | Pro |
+| AI health / endpoint settings | overlay Settings tab | 🔵 Web app (account settings) | — |
 
 ---
 
-## 10. Modals
+## 6. Repurpose pipeline
 
-- **Compare** (2-3 rows) — side-by-side stats + covers
-- **Repurpose** — 4 tabs (TikTok / YT Shorts / X / LinkedIn), per-platform regenerate
-- **Pipeline** — full multi-step run (download → transcribe → diagnose → rewrite → README) with progress
-- **Help** — keyboard shortcuts
+The "✨ Repurpose top N" button runs: download → transcribe → diagnose →
+rewrite → README. This is a long-running multi-stage job — terrible fit
+for an extension service worker (30s idle kill), perfect fit for a
+server queue.
 
----
-
-## 11. Cross-platform popup dashboard
-
-`src/dashboard/dashboard.js` — opened from toolbar icon. Reads the
-`UnifiedPosts` Airtable table (or self-hosted Postgres via webhook
-mirror), recomputes outlier scores per-platform, renders a combined feed
-across IG + TT + (future) YT Shorts. **Independent surface** — does not
-share UI with the in-page overlay.
+| Feature | Location now | Where it should live | Tier |
+|---|---|---|---|
+| Pipeline orchestrator | `src/pipeline.js` + `src/lib/pipeline-runtime.js` | 🔵 Web app (server job) | Pro |
+| Per-step progress UI | overlay modal | 🔵 Web app | Pro |
+| Pipeline step audit log | IDB `pipeline_steps` | 🔵 Postgres | Pro |
+| Bulk actions (download / audio / transcribe / rewrite where score ≥ N) | overlay footer | 🟡 Both — extension handles raw downloads, server handles transcribe/rewrite | Pro |
 
 ---
 
-## 12. Background / infra
+## 7. Transcription
 
-- declarativeNetRequest rules (`rules.json`) for IG/TT API capture
-- service worker (`background.js`): downloads, LLM bridge, sinks dispatcher,
-  weekly-digest alarm
-- offscreen doc: transformers.js (MiniLM embeddings for niche auto-cluster
-  + signals trigram fallback) + audio post-processing
-- IndexedDB (`src/store.js`): `posts`, `meta`, `voice`, `rewrites`,
-  `pipeline_steps`, `audio`, `signals`, `creators`, `logs`
-- Ollama at `localhost:11434` (Gemma 3/4)
-- faster-whisper sidecar at `localhost:8787`
-- 3 sinks: Sheets (Apps Script), Airtable (upsert), Notion (append-only)
-- 3 webhooks: generic, Slack, Discord + weekly digest alarm
+| Feature | Location now | Where it should live | Tier |
+|---|---|---|---|
+| faster-whisper sidecar (Python, port 8787) | `sidecar/transcribe-server.py` | 🟡 Both — keep as BYO option, also offer hosted | Pro / Free (BYO) |
+| Per-row "Transcribe" action | overlay row | 🟡 Both | Pro / Free (BYO) |
+| Sidecar health check | overlay Settings | 🔵 Web app account settings | — |
 
 ---
 
-# Findings — UI Audit
+## 8. Exports & sinks
 
-## A. The tab bar is the #1 source of confusion
-
-Seven tabs, but only 2 are independent surfaces:
-
-| Tab | Independent? | Verdict |
-|--|--|--|
-| **Current** | yes | keep |
-| **Pinned** | **no** — same data as `📌 Pinned only` chip and the pinned drawer | **remove the tab** (3 entry points → 1) |
-| **Sounds** | yes (different table) | keep, but TT-only realistically |
-| **Signals** | half — derived from posts; novel UX | demote to a **🔔 badge in header**, push panel into Stats or remove |
-| **Niche** | yes (different table = creators) | keep |
-| **Patterns** | **no** — same data as Stats "top hooks/topics" | **fold into Stats**, remove the tab |
-| **Settings** | yes | keep, but split into sections |
-
-**Recommended tab bar (4 tabs):** `Current · Sounds · Niche · Settings`,
-plus a header **🔔 Signals** indicator that opens an inline drawer (only
-when `signalsBadge > 0`).
-
-## B. Pinned has 3 entry points, pick one
-
-Currently:
-1. `Pinned` tab
-2. `📌 Pinned only` filter chip
-3. `📌 Pinned · N` collapsible drawer above the list
-
-Pick #2. Delete #1 and #3. Pinned-only is one click; the chip is already
-there.
-
-## C. Filter chip row is over-stuffed (13 chips)
-
-Cover-vision chips (`Has face`, `Has text overlay`, `Closeup`, `Text-heavy`)
-are 4 of the 13 slots and almost no user picks "show me text-heavy posts"
-as a primary filter — they're tertiary signals. Move them into a "more
-filters" `<details>` or a single `🅱 Cover…` dropdown that fans them out.
-
-Likewise the 3 dynamic AI chips (`hook`, `topic`, `angle`) appear inline
-and only after a click — at rest they're hidden, which is fine, but the
-**Pinned/Status/Note/Transcript/Analysis** group already takes 6 chips
-and you really only need:
-
-- `📌 Pinned`
-- a **Status** dropdown (Idea / Drafted / Posted / —) instead of 3 chips
-- a single **Has…** dropdown (Note / Transcript / Analysis / Cover meta)
-
-That collapses 13 chips → 3 controls.
-
-## D. Footer has 5 mini-toolbars
-
-The footer mixes:
-- session controls (`Collect all`, `Stop`, `CSV`)
-- 2 different "Repurpose top N" buttons (the **pipeline** vs the **rewrite**)
-- 3 separate "outliers ≥ N" bulk controls (download, transcribe), each
-  with their own threshold input and cancel button
-
-Two changes:
-1. Rename: only one button should be called "Repurpose". The plain
-   rewrite-only one should become `✍ Rewrites top N` (or fold it into the
-   pipeline modal as a "fast-mode" preset).
-2. Collapse the three "outliers ≥ N" controls into one **▼ Bulk** menu
-   (download / transcribe / rewrite / pipeline) sharing a single threshold
-   input. Today the user has to set 3 different N inputs.
-
-## E. Sort dropdown has 12 options — split it
-
-Half are stats (outlier / velocity / likes / views / comments / cpr /
-recent), the other half are **groupings** (status / hookType / topic /
-angle / coverWinRate). These behave differently — group-sort changes the
-visual layout (section headers). Split into:
-
-- **Sort:** outlier · velocity · likes · views · comments · recent
-- **Group by:** none · status · hook · topic · angle · cover-win-rate
-
-## F. Settings panel is one long scroll
-
-8 sections in one `<details>`-less column. Convert to a vertical sub-tab
-list (or accordions): `Radar · Signals · AI · Sidecar · Voice · Storage ·
-Webhooks · Sinks`. The sinks already use `<details>`; apply the same
-pattern to the rest.
-
-## G. Two badges, neither necessary in the tab bar
-
-The `Signals 0` badge is always visible even when count = 0. Only show
-the badge when `> 0`, and prefer a header bell icon with a dot (less
-visual weight than a dedicated tab).
-
-## H. Stats panel + Patterns tab + Niche tab voice meta = three places telling you about hooks/topics
-
-Consolidate. Stats panel should be the one canonical surface for hook /
-topic / angle distributions; Patterns becomes a Stats sub-view; Niche
-keeps only **per-creator** data (voice, intervals, rescrape).
+| Feature | Location now | Where it should live | Tier |
+|---|---|---|---|
+| CSV export (current view) | overlay | 🔵 Web app | Free |
+| CSV export (selected) | overlay | 🔵 Web app | Free |
+| PDF report | `src/lib/report.js` (jsPDF) | 🔵 Web app | Pro |
+| Google Sheets sink | `src/sinks/sheets.js` | 🔵 Web app | Pro |
+| Airtable sink | `src/sinks/airtable.js` | 🔵 Web app | Pro |
+| Notion sink | `src/sinks/notion.js` | 🔵 Web app | Pro |
+| Generic webhook | `background.js` `webhook-post` | 🔵 Web app | Pro |
+| Slack digest (top 5) | `background.js` `sendTopToSlack` | 🔵 Web app | Pro |
+| Discord digest (top 5) | `background.js` | 🔵 Web app | Pro |
+| Auto-sync on `collect.end` | `background.js` `runAutoOnCollect` | 🔵 Web app (server cron) | Pro |
+| Weekly digest | `background.js` `sendWeeklyDigest` | 🔵 Web app (server cron) | Pro |
 
 ---
 
-# Summary recommendation
+## 9. Cross-creator features (require server in practice)
 
-**Cuts (zero feature loss):**
-- Remove the `Pinned` tab and the pinned drawer (chip stays).
-- Remove the `Patterns` tab (fold into Stats).
-- Demote `Signals` from a tab to a header bell + inline drawer.
-- Remove the 4 cover-vision chips from the always-visible row (move to a
-  "More filters" disclosure).
-- Merge 3 "Status" chips into a `Status` select.
-- Merge 4 "Has-X" chips into a `Has…` multi-select.
+| Feature | Location now | Where it should live | Tier |
+|---|---|---|---|
+| Outlier Radar (cross-creator ranked feed) | `content.js` `renderRadar` | 🔵 Web app | Pro |
+| Signals (cross-creator hook reuse alerts) | `content.js` + `background.js` `notify-signal` | 🔵 Web app | Pro |
+| Niche tab (track creators, auto re-scrape) | `content.js` + `background.js` alarm | 🔵 Web app | Pro |
+| Rescrape stale | `background.js` `rescrape-stale` | 🔵 Web app cron | Pro |
+| Compare creators (2–3 side-by-side) | overlay | 🔵 Web app | Pro |
 
-**Renames / regroups:**
-- "Repurpose top" (footer, plain rewrite) → "Rewrites top N" or remove
-  (subsumed by the pipeline button).
-- Sort dropdown → split into `Sort` + `Group by`.
-- Footer "outliers ≥ N" controls → one `▼ Bulk` menu with shared threshold.
+---
 
-**Settings:**
-- Sub-tabs / accordions for the 8 sections.
+## 10. Settings (currently the Settings tab)
 
-**Result:** tab bar 7 → 4. Filter chips 13 → 3 controls. Footer 5
-toolbars → 3. Sort dropdown 12 → 6 + grouping. Net UI density drops by
-roughly 50% with no feature loss.
+Every one of these moves to **/account** or **/workspace/settings** on the
+web app. The Settings tab in the overlay should die.
+
+| Setting | Notes |
+|---|---|
+| Outlier Radar defaults (min score / range / limit) | per-user preferences |
+| Signals thresholds | per-user |
+| Bulk download → ZIP toggle | per-user |
+| Transcription sidecar URL | per-user (BYO) |
+| Local AI endpoint / model / vision model / concurrency | per-user (BYO) |
+| AI cache clear | account action |
+| My voice (handle) | per-user |
+| Storage stats | account dashboard |
+| Outbound webhooks (Generic / Slack / Discord) | per-workspace |
+| Sinks (Sheets / Airtable / Notion creds) | per-workspace |
+
+---
+
+## 11. UX / overlay chrome
+
+| Feature | Location now | Where it should live | Tier |
+|---|---|---|---|
+| Floating overlay panel | `content.js` + `overlay.css` | 🟢 Extension (much smaller) | Free |
+| Tabs (Current / Sounds / Niche / Settings) | overlay | 🔴 Delete (only Current survives) | — |
+| Stats summary (post count, authors) | overlay | 🟡 Both | Free |
+| Logs panel (debug / info / warn / error) | overlay | 🟢 Extension only (debugging tool) | Free |
+| Keyboard shortcuts (j/k/o/d/x/p/c/s/?) | overlay | 🟢 Extension | Free |
+| Help / cheat sheet | overlay modal | 🟢 Extension | Free |
+| Share view link | overlay | 🔵 Web app (real share URLs) | Free |
+| Modal system (compare / rewrites / pipeline) | overlay | 🔵 Web app | Pro |
+
+---
+
+## 12. Account / billing (new, web app only)
+
+None of this exists yet.
+
+| Feature | Tier |
+|---|---|
+| Sign-up / sign-in (Clerk or Auth.js) | Free |
+| API key for the extension (`Authorization: Bearer …`) | Free |
+| Stripe checkout & customer portal | Pro / Team |
+| Usage meter (AI tokens, transcription minutes) | Pro |
+| Workspace + invites | Team |
+| Audit log | Team |
+
+---
+
+## Recommended target shape
+
+**Extension** (≤ 500 lines of UI, no AI, no settings):
+
+- Overlay shows: scope badge, post count, "Collect all", "Stop", "Open dashboard ↗".
+- Per-row quick actions: pin, status, download, open.
+- POSTs every harvest batch to `/api/ingest`.
+- Service worker handles only: downloads, BYO-Ollama proxy, BYO-Whisper proxy.
+
+**Web app** (everything else):
+
+- Dashboard: sortable/filterable/groupable cross-platform table.
+- Compare view (2–3 posts).
+- Outlier Radar.
+- Watchlists & Signals (server cron).
+- Repurpose pipeline.
+- Exports (CSV, PDF, Sheets, Airtable, Notion, webhooks).
+- Account, billing, workspace.
+
+**Sidecar** (unchanged — for BYO power users):
+
+- `sidecar/transcribe-server.py` keeps running locally. Web app calls it
+  via the extension if the user toggles "Use my local sidecar".
+
+---
+
+## Decision checklist (use this when adding a new feature)
+
+1. **Does it need to read the page DOM or intercept network?** → Extension.
+2. **Does it need to run for >30 seconds, or on a schedule?** → Web app.
+3. **Does it need to be shared across devices or seats?** → Web app.
+4. **Is it a cosmetic chrome thing on top of the IG/TT page?** → Extension.
+5. **Would I want to charge money for it?** → Web app, behind Stripe.
+6. **Is it complex UI (tables, side-by-side, charts)?** → Web app.
+7. **None of the above clearly true?** → Default to web app. Extensions
+   are a worse place to ship UI: smaller surface, harder to debug,
+   slower iteration, no SEO.
