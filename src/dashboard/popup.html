@@ -4,21 +4,124 @@
 <meta charset="utf-8">
 <title>Feed Sorter</title>
 <style>
-  body { font: 13px -apple-system, system-ui, sans-serif; margin: 12px; width: 220px; }
-  h1 { font-size: 13px; margin: 0 0 8px; }
-  button { width: 100%; padding: 8px; font-size: 13px; cursor: pointer; }
-  .hint { color: #666; font-size: 11px; margin-top: 8px; }
+  body { font: 13px -apple-system, system-ui, sans-serif; margin: 0; width: 320px; background: #fff; }
+  .container { padding: 12px; }
+  h1 { font-size: 13px; margin: 0 0 10px; display: flex; align-items: center; justify-content: space-between; }
+  h2 { font-size: 11px; margin: 14px 0 6px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  button { width: 100%; padding: 7px; font-size: 13px; cursor: pointer; margin-top: 6px; border: 1px solid #d1d5db; background: #f9fafb; border-radius: 4px; }
+  button:hover:not(:disabled) { background: #f3f4f6; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.primary { background: #16a34a; color: white; border-color: #16a34a; }
+  button.primary:hover:not(:disabled) { background: #15803d; }
+  input[type="text"], input[type="password"], input[type="url"] {
+    width: 100%; box-sizing: border-box; padding: 6px 8px; font-size: 12px;
+    border: 1px solid #d1d5db; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, monospace;
+  }
+  label { display: block; font-size: 11px; color: #4b5563; margin: 8px 0 3px; font-weight: 500; }
+  .row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid #f3f4f6; }
+  .row:first-of-type { border-top: 0; padding-top: 0; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: #9ca3af; }
+  .dot.on { background: #16a34a; }
+  .dot.warn { background: #f59e0b; }
+  .label { flex: 1; }
+  .muted { color: #6b7280; font-size: 11px; }
+  .err { color: #b91c1c; font-size: 11px; margin-top: 4px; }
+  .tier { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 10px; background: #e5e7eb; color: #111; text-transform: uppercase; font-weight: 600; }
+  .tier.pro { background: #d1fae5; color: #065f46; }
+  .tabs { display: flex; gap: 0; margin: 0 -12px 0; border-bottom: 1px solid #e5e7eb; }
+  .tab { flex: 1; text-align: center; padding: 8px 6px; font-size: 12px; cursor: pointer; color: #6b7280; border-bottom: 2px solid transparent; user-select: none; }
+  .tab.active { color: #111; border-bottom-color: #16a34a; font-weight: 500; }
+  .panel { display: none; padding-top: 10px; }
+  .panel.active { display: block; }
+  .help { font-size: 11px; color: #6b7280; margin-top: 4px; }
+  .save-status { font-size: 10px; color: #16a34a; margin-left: 6px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 11px; padding: 6px 0; }
+  .kv .k { color: #6b7280; }
+  .kv .v { font-family: ui-monospace, SFMono-Regular, monospace; word-break: break-all; }
+  .footer { margin-top: 14px; padding-top: 10px; border-top: 1px solid #f3f4f6; font-size: 10px; color: #9ca3af; text-align: center; }
+  .footer a { color: #6b7280; text-decoration: none; cursor: pointer; }
+  .footer a:hover { color: #111; text-decoration: underline; }
+  .footer .sep { margin: 0 6px; color: #d1d5db; }
 </style>
 </head>
 <body>
-  <h1>Feed Sorter</h1>
-  <button id="open">Open cross-platform dashboard</button>
-  <div class="hint">Reads the unified Airtable table written by every Feed&nbsp;Sorter extension (IG, TikTok, YT&nbsp;Shorts).</div>
-<script>
-  document.getElementById("open").addEventListener("click", () => {
-    chrome.tabs.create({ url: chrome.runtime.getURL("src/dashboard/index.html") });
-    window.close();
-  });
-</script>
+<div class="container">
+  <h1>
+    <span>Feed Sorter</span>
+    <span id="tier" class="tier" style="display:none">free</span>
+  </h1>
+
+  <div class="row">
+    <span id="dot" class="dot"></span>
+    <div class="label">
+      <div id="status">Checking…</div>
+      <div class="muted" id="email"></div>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="main">Main</div>
+    <div class="tab" data-tab="settings">Settings</div>
+    <div class="tab" data-tab="dev">Dev</div>
+  </div>
+
+  <div class="panel active" data-panel="main">
+    <button id="signin">Sign in / Connect</button>
+    <button id="sync" class="primary" disabled>Sync to web app</button>
+    <button id="open">Open extension dashboard</button>
+    <button id="openWeb">Open web app</button>
+    <div id="syncResult" class="muted" style="margin-top: 6px;"></div>
+    <div id="err" class="err"></div>
+  </div>
+
+  <div class="panel" data-panel="settings">
+    <label>API base URL</label>
+    <input id="apiBaseUrl" type="url" placeholder="http://localhost:8787">
+    <div class="help">Where the extension sends sync + transcribe calls.</div>
+
+    <label>Web app URL</label>
+    <input id="appUrl" type="url" placeholder="http://localhost:3000">
+    <div class="help">Used by the &ldquo;Sign in / Connect&rdquo; button.</div>
+
+    <button id="saveSettings">Save settings</button>
+    <span id="saveStatus" class="save-status"></span>
+
+    <button id="openOptions" style="margin-top:10px">Open full settings…</button>
+
+    <h2>Backend status</h2>
+    <div class="kv" id="backendStatus">
+      <div class="k">Engine</div><div class="v" id="bsEngine">…</div>
+      <div class="k">Transcribe</div><div class="v" id="bsTranscribe">…</div>
+      <div class="k">Tier</div><div class="v" id="bsTier">…</div>
+    </div>
+  </div>
+
+  <div class="panel" data-panel="dev">
+    <div class="muted" style="margin-bottom: 8px;">
+      Dev-only overrides. Stored in <code>chrome.storage.local</code>; not transmitted to backend yet.
+    </div>
+
+    <label>Groq API key (extraction LLM)</label>
+    <input id="groqKey" type="password" placeholder="gsk_…" autocomplete="off">
+
+    <label>OpenAI API key (embeddings)</label>
+    <input id="openaiKey" type="password" placeholder="sk-…" autocomplete="off">
+
+    <label>WhisperX URL (transcription)</label>
+    <input id="whisperxUrl" type="url" placeholder="http://localhost:8788">
+    <div class="help">Local sidecar default. Leave blank to use Groq Whisper on the backend.</div>
+
+    <button id="saveDev">Save dev keys</button>
+    <span id="saveDevStatus" class="save-status"></span>
+
+    <button id="clearDev">Clear all stored keys</button>
+  </div>
+
+  <div class="footer">
+    <a id="linkTerms">Terms</a><span class="sep">·</span><a id="linkPrivacy">Privacy</a>
+  </div>
+</div>
+
+<script src="popup.js"></script>
 </body>
 </html>

@@ -64,6 +64,27 @@ export const surfaceFromUrlTag = (url, tag) => {
 
 const ID_PREFIX = "tt_";
 
+// Pick the auto-caption track from item.video.subtitleInfos[]. Prefers
+// English (LanguageCodeName starting with "en"); falls back to the first
+// element. Returns four parallel strings — never undefined — so the
+// post schema stays stable when subtitleInfos is missing.
+export const captionsOf = (m) => {
+  const arr = m.video?.subtitleInfos;
+  if (!Array.isArray(arr) || arr.length === 0) {
+    return { captionUrl: "", captionFormat: "", captionSource: "", captionLang: "" };
+  }
+  const en = arr.find(
+    (s) => s && typeof s.LanguageCodeName === "string" && s.LanguageCodeName.toLowerCase().startsWith("en")
+  );
+  const pick = en || arr[0];
+  return {
+    captionUrl: str(pick?.Url),
+    captionFormat: str(pick?.Format).toLowerCase(),
+    captionSource: str(pick?.Source),
+    captionLang: str(pick?.LanguageCodeName),
+  };
+};
+
 export const audioOf = (m) => {
   const mu = m.music;
   if (!mu || typeof mu !== "object") return null;
@@ -92,6 +113,7 @@ export const toPost = (m, surface, pageScope = { kind: "other", username: null }
       : a && nativeId
         ? `https://www.tiktok.com/@${a}/video/${nativeId}`
         : "";
+  const caps = captionsOf(m);
   return {
     id,
     nativeId,
@@ -120,6 +142,10 @@ export const toPost = (m, surface, pageScope = { kind: "other", username: null }
     accessibilityCaption: "",
     carouselCount: 0,
     productType: "video",
+    captionUrl: caps.captionUrl,
+    captionFormat: caps.captionFormat,
+    captionSource: caps.captionSource,
+    captionLang: caps.captionLang,
   };
 };
 

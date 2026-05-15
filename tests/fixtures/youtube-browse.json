@@ -1,0 +1,51 @@
+{
+  "contents": {
+    "twoColumnBrowseResultsRenderer": {
+      "tabs": [
+        {
+          "tabRenderer": {
+            "title": "Shorts",
+            "content": {
+              "richGridRenderer": {
+                "contents": [
+                  {
+                    "richItemRenderer": {
+                      "content": {
+                        "shortsLockupViewModel": {
+                          "videoId": "abc123XYZ_-",
+                          "title": { "simpleText": "Morning routine that changed my life" },
+                          "headline": { "simpleText": "Morning routine that changed my life" },
+                          "viewCountText": { "simpleText": "1.2M views" },
+                          "lengthText": { "simpleText": "47" },
+                          "thumbnail": {
+                            "thumbnails": [
+                              { "url": "https://i.ytimg.com/vi/abc123XYZ_-/maxres.jpg" }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "richItemRenderer": {
+                      "content": {
+                        "shortsLockupViewModel": {
+                          "videoId": "def456ABC__",
+                          "title": { "simpleText": "30-second mobility flow" },
+                          "headline": { "simpleText": "30-second mobility flow" },
+                          "viewCountText": { "simpleText": "847K views" },
+                          "lengthText": { "simpleText": "30" },
+                          "thumbnail": { "thumbnails": [{ "url": "https://i.ytimg.com/vi/def456ABC__/maxres.jpg" }] }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

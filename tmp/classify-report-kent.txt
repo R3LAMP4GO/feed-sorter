@@ -1,0 +1,1050 @@
+
+classify-test  •  /Users/imorgado/Downloads/feed-sorter-instagram/tmp/library-export.json
+posts: 336  (filter: @kentjandraa)  •  min-confidence: 0.4
+
+─── creators (by post count) ───
+@kentjandraa                   336 posts
+  top3: story 0.01  listicle 0.01  tutorial 0.00
+  hist: listicle:5  story:5  tutorial:3  educational:1  talking_head:1
+
+─── multi-label spotlight ───
+  ig_3585521810131387422  @kentjandraa
+    how to make your videos “feel” viral (with this editing speed trick): in order to create a fast-pac…
+    tutorial:0.55  story:0.55  listicle:0.50  educational:0.25  talking_head:0.17
+  ig_3586317682376976449  @kentjandraa
+    how to make yourself “look cinematic” in any video (without a $12,000 camera): this one trick insta…
+    educational:0.60  tutorial:0.55  listicle:0.50  talking_head:0.42  explainer:0.33
+  ig_3765591760899848400  @kentjandraa
+    a sluggard’s hangover Proverbs 24:30-34 30 I went past the field of a sluggard, past the vineyard o…
+    story:1.00  listicle:0.50
+
+─── per-post detail ───
+  ig_3414394060130588206  ??  views=2930
+    
+    (no labels above noise floor)
+  ig_3415114337806260566  ??  views=3567
+    
+    (no labels above noise floor)
+  ig_3415834595030641689  ??  views=2850
+    
+    (no labels above noise floor)
+  ig_3416559895603399339  ??  views=3034
+    
+    (no labels above noise floor)
+  ig_3417284339325746259  ??  views=4262
+    
+    (no labels above noise floor)
+  ig_3418008906088407346  ??  views=2258
+    
+    (no labels above noise floor)
+  ig_3418967216901662844  ??  views=3665
+    
+    (no labels above noise floor)
+  ig_3419458426789789245  ??  views=1562
+    
+    (no labels above noise floor)
+  ig_3420636377710389804  ??  views=1554
+    
+    (no labels above noise floor)
+  ig_3421144661739350030  ??  views=2637
+    
+    (no labels above noise floor)
+  ig_3421602739990490414  ??  views=2092
+    
+    (no labels above noise floor)
+  ig_3422357806298285768  ??  views=4626
+    
+    (no labels above noise floor)
+  ig_3423052301089363422  ??  views=54734
+    
+    (no labels above noise floor)
+  ig_3423812979010431815  ??  views=3643
+    
+    (no labels above noise floor)
+  ig_3424527961150860659  ??  views=4535
+    
+    (no labels above noise floor)
+  ig_3425258003191415990  ??  views=3466
+    
+    (no labels above noise floor)
+  ig_3425981759522335761  ??  views=6807
+    
+    (no labels above noise floor)
+  ig_3426708658267489323  ??  views=2152
+    
+    (no labels above noise floor)
+  ig_3427434216873789787  ??  views=5514
+    
+    (no labels above noise floor)
+  ig_3428156519702201449  ??  views=4127
+    
+    (no labels above noise floor)
+  ig_3428881236822209435  ??  views=13059
+    
+    (no labels above noise floor)
+  ig_3429607885276465020  ??  views=7818
+    
+    (no labels above noise floor)
+  ig_3430330874089047541  ??  views=3314
+    
+    (no labels above noise floor)
+  ig_3431055374533860845  ??  views=3069
+    
+    (no labels above noise floor)
+  ig_3431783641108813673  ??  views=2617
+    
+    (no labels above noise floor)
+  ig_3432504844425556494  ??  views=4117
+    
+    (no labels above noise floor)
+  ig_3433230483940026022  ??  views=3400
+    
+    (no labels above noise floor)
+  ig_3433955006326864302  ??  views=4465
+    
+    (no labels above noise floor)
+  ig_3434684737326225782  ??  views=2186
+    
+    (no labels above noise floor)
+  ig_3435404302426877520  ??  views=3344
+    
+    (no labels above noise floor)
+  ig_3436129338837209166  ??  views=2475
+    
+    (no labels above noise floor)
+  ig_3436853820792714446  ??  views=3151
+    
+    (no labels above noise floor)
+  ig_3437577818227228515  ??  views=7545
+    
+    (no labels above noise floor)
+  ig_3438302627562396812  ??  views=6848
+    
+    (no labels above noise floor)
+  ig_3439027729871493861  ??  views=4320
+    
+    (no labels above noise floor)
+  ig_3439752325960718225  ??  views=4711
+    
+    (no labels above noise floor)
+  ig_3440477072186182377  ??  views=3479
+    
+    (no labels above noise floor)
+  ig_3441201725194806665  ??  views=3236
+    
+    (no labels above noise floor)
+  ig_3441926486975976119  ??  views=2607
+    
+    (no labels above noise floor)
+  ig_3442651495422918111  ??  views=3060
+    
+    (no labels above noise floor)
+  ig_3443376245158514349  ??  views=41691
+    
+    (no labels above noise floor)
+  ig_3444101151356756387  ??  views=4117
+    
+    (no labels above noise floor)
+  ig_3444825800185122816  ??  views=3157
+    
+    (no labels above noise floor)
+  ig_3445550387892329139  ??  views=5393
+    
+    (no labels above noise floor)
+  ig_3446275247110512317  ??  views=2996
+    
+    (no labels above noise floor)
+  ig_3446999908319651248  ??  views=1881
+    
+    (no labels above noise floor)
+  ig_3447724969423720735  ??  views=2698
+    
+    (no labels above noise floor)
+  ig_3448449767785443492  ??  views=6290
+    
+    (no labels above noise floor)
+  ig_3449174316035657617  ??  views=3646
+    
+    (no labels above noise floor)
+  ig_3449899057298099842  ??  views=3465
+    
+    (no labels above noise floor)
+  ig_3450623785038626517  ??  views=129801
+    
+    (no labels above noise floor)
+  ig_3451348595740445624  ??  views=2934
+    
+    (no labels above noise floor)
+  ig_3452073443102770731  ??  views=3405
+    
+    (no labels above noise floor)
+  ig_3452798186630379793  ??  views=3014
+    
+    (no labels above noise floor)
+  ig_3453522884473777971  ??  views=2070
+    
+    (no labels above noise floor)
+  ig_3454247756228466610  ??  views=3312
+    
+    (no labels above noise floor)
+  ig_3454972572425394603  ??  views=2751
+    
+    (no labels above noise floor)
+  ig_3455697160107316149  ??  views=4062
+    
+    (no labels above noise floor)
+  ig_3456422306433579924  ??  views=3560
+    
+    (no labels above noise floor)
+  ig_3457146981417550610  ??  views=2830
+    
+    (no labels above noise floor)
+  ig_3457872642768162358  ??  views=5059
+    
+    (no labels above noise floor)
+  ig_3458596388542471635  ??  views=3615
+    
+    (no labels above noise floor)
+  ig_3459321220018132908  ??  views=1686
+    
+    (no labels above noise floor)
+  ig_3460045892906459022  ??  views=1888
+    
+    (no labels above noise floor)
+  ig_3460770861421330424  ??  views=4276
+    
+    (no labels above noise floor)
+  ig_3461495777790819420  ??  views=4018
+    
+    (no labels above noise floor)
+  ig_3462220423607708869  ??  views=2979
+    
+    (no labels above noise floor)
+  ig_3462945276026703789  ??  views=3697
+    
+    (no labels above noise floor)
+  ig_3463670060177293814  ??  views=4620
+    
+    (no labels above noise floor)
+  ig_3464394671611414091  ??  views=7589
+    
+    (no labels above noise floor)
+  ig_3465119297083706729  ??  views=5426
+    
+    (no labels above noise floor)
+  ig_3465844059614222736  ??  views=3371
+    
+    (no labels above noise floor)
+  ig_3466569205853900421  ??  views=2840
+    
+    (no labels above noise floor)
+  ig_3467293602796359993  ??  views=9099
+    
+    (no labels above noise floor)
+  ig_3468018591077590574  ??  views=3021
+    
+    (no labels above noise floor)
+  ig_3468919653053764541  ??  views=3604
+    
+    (no labels above noise floor)
+  ig_3469468247979018734  ??  views=2600
+    
+    (no labels above noise floor)
+  ig_3470192940166608897  ??  views=3141
+    
+    (no labels above noise floor)
+  ig_3470917940646685481  ??  views=3583
+    
+    (no labels above noise floor)
+  ig_3471642582183464663  ??  views=6390
+    
+    (no labels above noise floor)
+  ig_3472336859919962486  ??  views=3804
+    
+    (no labels above noise floor)
+  ig_3473061927482788061  ??  views=3627
+    
+    (no labels above noise floor)
+  ig_3473786692729601658  ??  views=3826
+    
+    (no labels above noise floor)
+  ig_3474511356817259110  ??  views=3529
+    
+    (no labels above noise floor)
+  ig_3475236057261382711  ??  views=3976
+    
+    (no labels above noise floor)
+  ig_3475961012281927311  ??  views=3660
+    
+    (no labels above noise floor)
+  ig_3476685620929262125  ??  views=3120
+    
+    (no labels above noise floor)
+  ig_3477410346471695221  ??  views=3967
+    
+    (no labels above noise floor)
+  ig_3478135250782392367  ??  views=3938
+    
+    (no labels above noise floor)
+  ig_3478860231187434905  ??  views=6343
+    
+    (no labels above noise floor)
+  ig_3479584989018133744  ??  views=5467
+    
+    (no labels above noise floor)
+  ig_3480311140362769465  ??  views=3493
+    
+    (no labels above noise floor)
+  ig_3481034214068230196  ??  views=3847
+    
+    (no labels above noise floor)
+  ig_3481760468249711234  ??  views=4103
+    
+    (no labels above noise floor)
+  ig_3482484036157454756  ??  views=3940
+    
+    (no labels above noise floor)
+  ig_3483208627079355216  ??  views=3474
+    
+    (no labels above noise floor)
+  ig_3483937947230903953  ??  views=9332
+    
+    (no labels above noise floor)
+  ig_3484675916580555629  ??  views=4293
+    
+    (no labels above noise floor)
+  ig_3485387775760010009  ??  views=2921
+    
+    (no labels above noise floor)
+  ig_3486109775995469369  ??  views=4038
+    
+    (no labels above noise floor)
+  ig_3486832521421788791  ??  views=4551
+    
+    (no labels above noise floor)
+  ig_3487557604453909212  ??  views=3265
+    
+    (no labels above noise floor)
+  ig_3488282873930747453  ??  views=3398
+    
+    (no labels above noise floor)
+  ig_3489010564720392848  ??  views=64389
+    
+    (no labels above noise floor)
+  ig_3489736407171244675  ??  views=5795
+    
+    (no labels above noise floor)
+  ig_3490458061912613573  ??  views=2679
+    
+    (no labels above noise floor)
+  ig_3491182452471498923  ??  views=80982
+    
+    (no labels above noise floor)
+  ig_3491912343894485050  ??  views=4203
+    
+    (no labels above noise floor)
+  ig_3492631029362500672  ??  views=4946
+    
+    (no labels above noise floor)
+  ig_3493356406389228149  ??  views=3541
+    
+    (no labels above noise floor)
+  ig_3494080990978825506  ??  views=3272
+    
+    (no labels above noise floor)
+  ig_3494805155453778234  ??  views=3258
+    
+    (no labels above noise floor)
+  ig_3495529727530618540  ??  views=3477
+    
+    (no labels above noise floor)
+  ig_3496254799437569644  ??  views=3275
+    
+    (no labels above noise floor)
+  ig_3496979310146860024  ??  views=3899
+    
+    (no labels above noise floor)
+  ig_3497704316429755663  ??  views=4251
+    
+    (no labels above noise floor)
+  ig_3498428851787634343  ??  views=5451
+    
+    (no labels above noise floor)
+  ig_3499153870502212923  ??  views=55662
+    
+    (no labels above noise floor)
+  ig_3499878529898943915  ??  views=3950
+    
+    (no labels above noise floor)
+  ig_3500603167799326244  ??  views=4506
+    
+    (no labels above noise floor)
+  ig_3501328004631612414  ??  views=5157
+    
+    (no labels above noise floor)
+  ig_3502052771168319153  ??  views=5035
+    
+    (no labels above noise floor)
+  ig_3502777415133210849  ??  views=220677
+    
+    (no labels above noise floor)
+  ig_3503502408077007892  ??  views=5864
+    
+    (no labels above noise floor)
+  ig_3504226983815065807  ??  views=14244
+    
+    (no labels above noise floor)
+  ig_3504951789065936567  ??  views=6359
+    
+    (no labels above noise floor)
+  ig_3505676919398492067  ??  views=8996
+    
+    (no labels above noise floor)
+  ig_3519035851160529291  ??  views=422141
+    what happens in Japan stays in Japan #jesuslovesyou
+    (no labels above noise floor)
+  ig_3519830797698244541  ??  views=650011
+    can i get a AAAAMEEEEEENNNN #bible #christianity
+    (no labels above noise floor)
+  ig_3520585812373231353  ??  views=48231
+    self improvement is for bozos (me) #selfimprovement #jesusisking
+    (no labels above noise floor)
+  ig_3521239709458800477  ??  views=37946
+    I quit Monk Mode for good… #selfimprovement #jesus
+    (no labels above noise floor)
+  ig_3521959778660811887  ??  views=199122
+    how do I stop being greedy… God? #jesuslovesyou
+    (no labels above noise floor)
+  ig_3524044950788985072  ??  views=59913
+    after 1 year, it’s time for a fresh new start…
+    (no labels above noise floor)
+  ig_3524818440240553129  ??  views=30355
+    the secret to Japanese discipline... comment “AMEN” to download the IKIGAI template! #ikigai #personalbranding #socialmedia #business #soci…
+    (no labels above noise floor)
+  ig_3525668629645943998  ??  views=98226
+    how I got 20 million views with one secret document… comment: “FREE” to get the FULL DREAM AVATAR TEMPLATE! #personalbranding #contentcreat…
+    (no labels above noise floor)
+  ig_3526285185849712222  ??  views=35435
+    day 4 of rebuilding my business…
+    (no labels above noise floor)
+  ig_3529202454103787693  ??  views=135954
+    no friends but JESUS DID!!!!
+    (no labels above noise floor)
+  ig_3529938765370398452  ??  views=58134
+    turn this tv off, turn this tv off
+    (no labels above noise floor)
+  ig_3530763018483377338  ??  views=52419
+    FOMO at university…
+    (no labels above noise floor)
+  ig_3531378832941097037  ??  views=65853
+    anyone else staying home this Christmas? 🎄✝️
+    (no labels above noise floor)
+  ig_3532043540400678416  ??  views=321463
+    not an influencer.
+    (no labels above noise floor)
+  ig_3532767305287612011  ??  views=456032
+    ✨ homemade asian physique ✨
+    (no labels above noise floor)
+  ig_3533506750186075505  ??  views=1593586
+    “1% better every day” 🤓
+    (no labels above noise floor)
+  ig_3534182100507524559  ??  views=209682
+    comment “SEND” to join the community pre-launch for FREE!
+    (no labels above noise floor)
+  ig_3534977919653260193  ??  views=1186805
+    what’s your colour palette? 🎨
+    (no labels above noise floor)
+  ig_3535607845645469479  ??  views=167555
+    happy new year yall
+    (no labels above noise floor)
+  ig_3536472435631636456  ??  views=1520587
+    how I x10’d my audience in 24 days…
+    (no labels above noise floor)
+  ig_3537138982394141866  ??  views=896195
+    how’s everyone’s content going?
+    (no labels above noise floor)
+  ig_3537803677673219141  ??  views=117305
+    how I turned multiple niches into my own
+    (no labels above noise floor)
+  ig_3538422081920857940  ??  views=1785926
+    new series prelude – ‘RAW FAITH’ (out tmr)
+    (no labels above noise floor)
+  ig_3539253168502856352  ??  views=1454275
+    2025 is the year when you realise… God got you. and He always has.
+    listicle:0.55  skit:0.25
+  ig_3539997477627931443  ??  views=3005532
+    can Christians swear?
+    (no labels above noise floor)
+  ig_3540752459344113866  ??  views=632784
+    struggling with sin doesn’t make you a hypocrite. it’s a sign that the Holy Spirit is pulling you closer.
+    (no labels above noise floor)
+  ig_3541543417979548021  ??  views=662636
+    talk with God like He’s known you your entire life.
+    (no labels above noise floor)
+  ig_3542249266930634069  ??  views=253456
+    two slices of God’s love and grace pls
+    (no labels above noise floor)
+  ig_3542910916364935030  ??  views=11432473
+    honour His sacrifice ✝️
+    (no labels above noise floor)
+  ig_3543664713064339570  ??  views=1632184
+    walk in the Spirit brev
+    (no labels above noise floor)
+  ig_3544377292589894488  ??  views=387068
+    I dropped out of uni for this?
+    (no labels above noise floor)
+  ig_3545084808114224933  ??  views=214077
+    I lost a $2.5k deal for this…
+    (no labels above noise floor)
+  ig_3545878370095624415  ??  views=874742
+    they say the Ken Effect is real but they don’t have the same effect ;)
+    (no labels above noise floor)
+  ig_3546556854459491252  ??  views=186312
+    bro loves his money, but Ecclesiastes 5:10…
+    (no labels above noise floor)
+  ig_3547278017586527181  ??  views=264660
+    can Christians be rich?
+    (no labels above noise floor)
+  ig_3548103585051655703  ??  views=267774
+    seek first the kingdom. comment “START” to join us today.
+    (no labels above noise floor)
+  ig_3549442293365270911  ??  views=259771
+    hands up if you’re an overthinking Christian 🙋🏻‍♂️
+    (no labels above noise floor)
+  ig_3550217235883126597  ??  views=353392
+    embrace the inner child you lost.
+    (no labels above noise floor)
+  ig_3550951370809503214  ??  views=292265
+    couldn’t defeat lust until this…
+    (no labels above noise floor)
+  ig_3551640529039585083  ??  views=257809
+    then said Jesus unto his disciples, “If any man will come after me, let him deny himself, and take up his cross, and follow me.”
+    story:0.20
+  ig_3552375271385067280  ??  views=1090110
+    if you keep sinning, you don’t believe in Him.
+    tip:0.30  talking_head:0.15
+  ig_3564662143654226549  ??  views=192739
+    HIBERNATION.
+    (no labels above noise floor)
+  ig_3565370158711695347  ??  views=1179123
+    CHRISTIANITY.
+    (no labels above noise floor)
+  ig_3566123230928981376  ??  views=431586
+    comment “CHURCH” to get invited to our community at a discount!
+    (no labels above noise floor)
+  ig_3566843000372450152  ??  views=476466
+    this is your sign to delete all your secular music.
+    (no labels above noise floor)
+  ig_3567552262203645058  ??  views=170458
+    HIGH SCHOOL.
+    (no labels above noise floor)
+  ig_3568030254147553700  ??  views=102606
+    FASTING. COMMITTING TO THE CROSS. EPISODE 6.
+    (no labels above noise floor)
+  ig_3568769594028806810  ??  views=83775
+    COMMITTING TO THE CROSS. MISSION FINALE.
+    (no labels above noise floor)
+  ig_3569670406393094788  ??  views=304574
+    can’t let these pixels get to my head
+    (no labels above noise floor)
+  ig_3570328290869276445  ??  views=629457
+    TALK TO YOUR YOUNGER SELF. COMMENT “SPEAK” TO JOIN US AT 50% OFF!
+    (no labels above noise floor)
+  ig_3571090617524610915  ??  views=133228
+    don’t be a copy-paste creator. tell your story to spread the Gospel.
+    (no labels above noise floor)
+  ig_3571684760928373822  ??  views=117248
+    yap
+    (no labels above noise floor)
+  ig_3572630745107780104  ??  views=139101
+    you are NOT the niche.
+    (no labels above noise floor)
+  ig_3573225516155174610  ??  views=139195
+    HEAVY HOOKS. comment “HOOK” to get the free template.
+    (no labels above noise floor)
+  ig_3579900665289833678  ??  views=141550
+    BURNT OUT.
+    (no labels above noise floor)
+  ig_3580447073864750292  ??  views=469117
+    am I using religion to make money? 1 Corinthians 3:9-17 For we are co-workers in God’s service; you are God’s field, God’s building. By the…
+    story:0.55
+  ig_3581281340282760835  ??  views=121630
+    comment “START” and get 50% OFF your Creatopia membership.
+    (no labels above noise floor)
+  ig_3581966850441521601  ??  views=100830
+    the only angpao u need 🧧
+    (no labels above noise floor)
+  ig_3582674041360349587  ??  views=125734
+    day 5. “building fellowship” apparently
+    (no labels above noise floor)
+  ig_3583456599736040116  ??  views=116968
+    caption
+    (no labels above noise floor)
+  ig_3584856283717229331  ??  views=735185
+    how to script a viral video (authentically). comment “STORY” for the full keyword list! 📋
+    tutorial:0.55  educational:0.25  talking_head:0.17
+  ig_3585521810131387422  ??  views=135731
+    how to make your videos “feel” viral (with this editing speed trick): in order to create a fast-paced, valuable story, I use the J-Cut: - s…
+    tutorial:0.55  story:0.55  listicle:0.50  educational:0.25  talking_head:0.17
+  ig_3586317682376976449  ??  views=214175
+    how to make yourself “look cinematic” in any video (without a $12,000 camera): this one trick instantly makes your shots feel more dramatic…
+    educational:0.60  tutorial:0.55  listicle:0.50  talking_head:0.42  explainer:0.33
+  ig_3586909722958076220  ??  views=184390
+    how I filmed this shot: SPIN TRANSITION 🎥👇🏻 1. loosen your tripod for easy turning 2. film first action, spin camera, stop recording 3. …
+    listicle:0.50
+  ig_3587746458839337463  ??  views=181966
+    most people overthink scripting… but here’s the secret: you don’t need to write for everyone—just one person. the more specific you write, …
+    story:0.20
+  ig_3589933389220221846  ??  views=10922260
+    join creatopia link in bio
+    (no labels above noise floor)
+  ig_3591395244270742495  ??  views=1017311
+    got this cinematic reel to 3M views in 24 hours. here’s how. method 1 – move extremely fast in the first 3 seconds. tension = attention. me…
+    (no labels above noise floor)
+  ig_3592785771561533645  ??  views=154331
+    
+    (no labels above noise floor)
+  ig_3596448893338530368  ??  views=566240
+    
+    (no labels above noise floor)
+  ig_3597941119310829764  ??  views=260491
+    
+    (no labels above noise floor)
+  ig_3626286453912955442  ??  views=184240
+    
+    (no labels above noise floor)
+  ig_3627028358661639192  ??  views=527544
+    comment “love” to get it for free
+    (no labels above noise floor)
+  ig_3636599457762029548  ??  views=1159989
+    
+    (no labels above noise floor)
+  ig_3637105787673396409  ??  views=156676
+    
+    (no labels above noise floor)
+  ig_3637814774450518485  ??  views=117824
+    
+    (no labels above noise floor)
+  ig_3638487094814942061  ??  views=77828
+    
+    (no labels above noise floor)
+  ig_3640653252745987704  ??  views=85214
+    
+    (no labels above noise floor)
+  ig_3642228283548589628  ??  views=213371
+    
+    (no labels above noise floor)
+  ig_3642701104838317003  ??  views=100820
+    
+    (no labels above noise floor)
+  ig_3643572806367127045  ??  views=100118
+    we’re halfway!
+    (no labels above noise floor)
+  ig_3645675940065582140  ??  views=99056
+    
+    (no labels above noise floor)
+  ig_3646336432769848340  ??  views=64244
+    
+    (no labels above noise floor)
+  ig_3646550838342272189  ??  views=121462
+    
+    (no labels above noise floor)
+  ig_3647176386093358906  ??  views=76345
+    
+    (no labels above noise floor)
+  ig_3647405860013597841  ??  views=85402
+    
+    (no labels above noise floor)
+  ig_3647866536125521104  ??  views=75546
+    1k by dawn: 537/1000
+    (no labels above noise floor)
+  ig_3648047089487224506  ??  views=74607
+    
+    (no labels above noise floor)
+  ig_3648538174252935477  ??  views=88197
+    
+    (no labels above noise floor)
+  ig_3649546038517773895  ??  views=77210
+    1k by dawn: 541/1000
+    (no labels above noise floor)
+  ig_3650990374102274274  ??  views=103028
+    
+    (no labels above noise floor)
+  ig_3651669193642439385  ??  views=70107
+    
+    (no labels above noise floor)
+  ig_3652343964117928025  ??  views=105238
+    
+    (no labels above noise floor)
+  ig_3653019590499770141  ??  views=60998
+    
+    (no labels above noise floor)
+  ig_3653904984376389571  ??  views=82743
+    
+    (no labels above noise floor)
+  ig_3654465310650135372  ??  views=83514
+    
+    (no labels above noise floor)
+  ig_3656095197018363692  ??  views=138347
+    
+    (no labels above noise floor)
+  ig_3656783642527087407  ??  views=147248
+    
+    (no labels above noise floor)
+  ig_3657424484531085026  ??  views=133017
+    1k by dawn: 594/1000
+    (no labels above noise floor)
+  ig_3658247220354609739  ??  views=144739
+    
+    (no labels above noise floor)
+  ig_3658917464890868103  ??  views=91757
+    1k by dawn: 601?/1000
+    (no labels above noise floor)
+  ig_3659367742610195520  ??  views=46959
+    
+    (no labels above noise floor)
+  ig_3660809798868046526  ??  views=43419
+    
+    (no labels above noise floor)
+  ig_3661124855581485987  ??  views=101234
+    
+    (no labels above noise floor)
+  ig_3661542535296147934  ??  views=49567
+    
+    (no labels above noise floor)
+  ig_3661851435786302708  ??  views=157909
+    
+    (no labels above noise floor)
+  ig_3662333511455253400  ??  views=98062
+    
+    (no labels above noise floor)
+  ig_3662495909864534713  ??  views=100926
+    
+    (no labels above noise floor)
+  ig_3663083863867468733  ??  views=66235
+    
+    (no labels above noise floor)
+  ig_3663291556280459932  ??  views=125839
+    
+    (no labels above noise floor)
+  ig_3663784366146727905  ??  views=75988
+    
+    (no labels above noise floor)
+  ig_3664077383118000045  ??  views=98266
+    
+    (no labels above noise floor)
+  ig_3664498680310598307  ??  views=74940
+    
+    (no labels above noise floor)
+  ig_3664706154132953158  ??  views=110753
+    
+    (no labels above noise floor)
+  ig_3665949304105524968  ??  views=117636
+    
+    (no labels above noise floor)
+  ig_3679972736753199593  ??  views=1298873
+    ambition fits: @owlamapparel @sheepskyn @theevangelion.com.au
+    (no labels above noise floor)
+  ig_3682103473551705369  ??  views=220522
+    
+    (no labels above noise floor)
+  ig_3683533290755201159  ??  views=128392
+    
+    (no labels above noise floor)
+  ig_3684318138113686241  ??  views=100246
+    
+    (no labels above noise floor)
+  ig_3684893212356948248  ??  views=88501
+    
+    (no labels above noise floor)
+  ig_3685586124178978432  ??  views=98510
+    
+    (no labels above noise floor)
+  ig_3686477471903561179  ??  views=101713
+    
+    (no labels above noise floor)
+  ig_3687102866361310973  ??  views=100478
+    
+    (no labels above noise floor)
+  ig_3687738798840059260  ??  views=71651
+    
+    (no labels above noise floor)
+  ig_3688069169049865836  ??  views=78663
+    
+    (no labels above noise floor)
+  ig_3688384289752198795  ??  views=82669
+    
+    (no labels above noise floor)
+  ig_3689082719499558736  ??  views=49198
+    
+    (no labels above noise floor)
+  ig_3689386750796893031  ??  views=75009
+    
+    (no labels above noise floor)
+  ig_3689840123887703937  ??  views=49751
+    
+    (no labels above noise floor)
+  ig_3697415815382528878  ??  views=118475
+    
+    (no labels above noise floor)
+  ig_3698152577846255605  ??  views=195707
+    
+    (no labels above noise floor)
+  ig_3698872312545182969  ??  views=105984
+    
+    (no labels above noise floor)
+  ig_3701468331548104534  ??  views=143381
+    
+    (no labels above noise floor)
+  ig_3701710770791932660  ??  views=83874
+    
+    (no labels above noise floor)
+  ig_3703230364153021275  ??  views=90923
+    
+    (no labels above noise floor)
+  ig_3703923651365294235  ??  views=75390
+    
+    (no labels above noise floor)
+  ig_3704571844801320511  ??  views=94422
+    
+    (no labels above noise floor)
+  ig_3705308777288078611  ??  views=334889
+    
+    (no labels above noise floor)
+  ig_3706746544618526904  ??  views=85113
+    
+    (no labels above noise floor)
+  ig_3707432004202298202  ??  views=77245
+    
+    (no labels above noise floor)
+  ig_3708176747496523314  ??  views=50594
+    
+    (no labels above noise floor)
+  ig_3711157039281668057  ??  views=238925
+    
+    (no labels above noise floor)
+  ig_3711887962696466813  ??  views=114716
+    
+    (no labels above noise floor)
+  ig_3712706727369661703  ??  views=101789
+    
+    (no labels above noise floor)
+  ig_3722050053751315152  ??  views=57245
+    
+    (no labels above noise floor)
+  ig_3722116420366146688  ??  views=140052
+    
+    (no labels above noise floor)
+  ig_3722768980022309708  ??  views=104339
+    
+    (no labels above noise floor)
+  ig_3723431847734196905  ??  views=116093
+    
+    (no labels above noise floor)
+  ig_3724971908594277231  ??  views=96785
+    
+    (no labels above noise floor)
+  ig_3726896147652029890  ??  views=66377
+    
+    (no labels above noise floor)
+  ig_3727596149869259282  ??  views=50067
+    
+    (no labels above noise floor)
+  ig_3728334561970642142  ??  views=80743
+    
+    (no labels above noise floor)
+  ig_3729005926201610115  ??  views=41391
+    
+    (no labels above noise floor)
+  ig_3729790788147747732  ??  views=46148
+    
+    (no labels above noise floor)
+  ig_3730662743465967279  ??  views=85090
+    
+    (no labels above noise floor)
+  ig_3731958583853767519  ??  views=222339
+    the difference between 10k creators vs 100k creators... 🌱 ever heard of ikigai? ❤️ what you love 💡 what you’re good at 🌍 what the world …
+    (no labels above noise floor)
+  ig_3732684334869681312  ??  views=57809
+    
+    (no labels above noise floor)
+  ig_3733426168364866694  ??  views=49435
+    
+    (no labels above noise floor)
+  ig_3734087504778586042  ??  views=69961
+    
+    (no labels above noise floor)
+  ig_3760292206977442075  ??  views=79009
+    
+    (no labels above noise floor)
+  ig_3761097608153667775  ??  views=95337
+    
+    (no labels above noise floor)
+  ig_3762554931963392499  ??  views=55894
+    
+    (no labels above noise floor)
+  ig_3763186776002402740  ??  views=81855
+    
+    (no labels above noise floor)
+  ig_3763833362156008796  ??  views=219187
+    stage 2 – content
+    (no labels above noise floor)
+  ig_3764503495107038902  ??  views=497282
+    
+    (no labels above noise floor)
+  ig_3764609540055787997  ??  views=79189
+    
+    (no labels above noise floor)
+  ig_3765591760899848400  ??  views=485940
+    a sluggard’s hangover Proverbs 24:30-34 30 I went past the field of a sluggard, past the vineyard of someone who has no sense; 31 thorns ha…
+    story:1.00  listicle:0.50
+  ig_3766057788146622183  ??  views=72011
+    
+    (no labels above noise floor)
+  ig_3767434476143136797  ??  views=63056
+    
+    (no labels above noise floor)
+  ig_3768302820400434593  ??  views=55746
+    
+    (no labels above noise floor)
+  ig_3775342693292676755  ??  views=65743
+    
+    (no labels above noise floor)
+  ig_3779202720801674216  ??  views=81094
+    
+    (no labels above noise floor)
+  ig_3809645078202448706  ??  views=68299
+    best hack
+    (no labels above noise floor)
+  ig_3813909880089258027  ??  views=41078
+    the box
+    (no labels above noise floor)
+  ig_3814720414724289532  ??  views=98941
+    WHAT’S IN THE BOX? COMING SOON. #whatsinthebox
+    (no labels above noise floor)
+  ig_3815298275680092780  ??  views=63313
+    COMMENT WHATS IN THE BOX COMMENT WHATS IN THE BOX COMMENT WHATS IN THE BOX COMMENT WHATS IN THE BOX COMMENT WHATS IN THE BOX COMMENT WHATS …
+    (no labels above noise floor)
+  ig_3816055568717760366  ??  views=42841
+    can i have a slice, bro? 🍰 a slice can mean many things. you, oftentimes, refuse to ask for another. why the hesitation? why limit yoursel…
+    story:0.55
+  ig_3816758778470218889  ??  views=244709
+    what’s in the box?
+    (no labels above noise floor)
+  ig_3818230560633040795  ??  views=220224
+    growing up asian, stereotypes are the boxes we were forced into. the worse your performance, the less your identity. men = less attractive.…
+    story:0.75  listicle:0.35
+  ig_3818903200838331145  ??  views=39908
+    #whatsinthebox
+    (no labels above noise floor)
+  ig_3819022570990261862  ??  views=27016
+    how 2 be great
+    (no labels above noise floor)
+  ig_3819602627328616460  ??  views=57497
+    #whatsinthebox
+    (no labels above noise floor)
+  ig_3819614542733937319  ??  views=46619
+    EVERYBODY’S QUESTIONABLE EVERYBODY’S QUESTIONABLE EVERYBODY’S QUESTIONABLE EVERYBODY’S QUESTIONABLE EVERYBODY’S QUESTIONABLE EVERYBODY’S QU…
+    (no labels above noise floor)
+  ig_3820297041290155120  ??  views=61600
+    box
+    (no labels above noise floor)
+  ig_3820590090012487838  ??  views=86930
+    ye cuz
+    (no labels above noise floor)
+  ig_3821197423721724230  ??  views=180868
+    all you need is a phone to start.
+    (no labels above noise floor)
+  ig_3824219712943956423  ??  views=90835
+    the reveal
+    (no labels above noise floor)
+  ig_3831339237019640241  ??  views=65751
+    you’re SAFE. (ep. 1)
+    (no labels above noise floor)
+  ig_3834036665065851544  ??  views=51607
+    ep. 2
+    (no labels above noise floor)
+  ig_3835089863180445394  ??  views=47885
+    ep. 3
+    (no labels above noise floor)
+  ig_3845975738105856383  ??  views=132393
+    that’s enough for today
+    (no labels above noise floor)
+  ig_3847476394176166430  ??  views=71183
+    we are nothing without each other none of this matters if i don’t have my people content creation, success, money, ambition, & fame – all c…
+    story:0.35
+  ig_3850831513190053182  ??  views=48631
+    my one-click powergrade is now released :) link in bio or go to kentjandra.com/colourgrade
+    (no labels above noise floor)
+  ig_3853200820507122577  ??  views=0
+    “For do I now persuade men, or God? or do I seek to please men? for if I yet pleased men, I should not be the servant of Christ.” Galatians…
+    story:0.35
+  ig_3853771669584886854  ??  views=48136
+    what does it take to build a big platform without compromising your authentic self? in this series, i’ll dive into content creation & perso…
+    (no labels above noise floor)
+  ig_3854436978432068930  ??  views=51000
+    
+    (no labels above noise floor)
+  ig_3854637766357997206  ??  views=36400
+    
+    (no labels above noise floor)
+  ig_3860545274108855766  ??  views=6567
+    
+    (no labels above noise floor)
+  ig_3860547099201552481  ??  views=29864
+    
+    (no labels above noise floor)
+  ig_3860560235375798417  ??  views=52936
+    
+    (no labels above noise floor)
+  ig_3861021106875061955  ??  views=42111
+    
+    (no labels above noise floor)
+  ig_3865645165092940170  ??  views=46461
+    
+    (no labels above noise floor)
+  ig_3866033813789503349  ??  views=31348
+    
+    (no labels above noise floor)
+  ig_3874155652621422475  ??  views=125288
+    the art of showing up #faith #christ
+    (no labels above noise floor)
+  ig_3874968629171881736  ??  views=208609
+    what’s your testimony? #christ #faith #christian #jesus
+    (no labels above noise floor)
+  ig_3877820097344197100  ??  views=163268
+    faith vs the grind
+    (no labels above noise floor)
+  ig_3879830546268981459  ??  views=27961
+    
+    (no labels above noise floor)
+  ig_3889532982545545034  ??  views=35337
+    
+    (no labels above noise floor)
+  ig_3890201102004247200  ??  views=76615
+    hello
+    (no labels above noise floor)
+  ig_3891678456601672528  ??  views=26210
+    may 7th 2026 rescheduling our Speaking Class to tomorrow 6AM AEDT !! #vlog
+    (no labels above noise floor)
+
+─── aggregate ───
+  any-confident-label:      9  (2.7%)
+  multi-label:              3  (0.9%)
+  no-confident-label:     327  (97.3%)  ← the "?" pile
+
+  label distribution (count where confidence ≥ min):
+    story              5  ████████████████████  avg=0.01
+    listicle           5  ████████████████████  avg=0.01
+    tutorial           3  ████████████········  avg=0.00
+    talking_head       1  ████················  avg=0.00
+    educational        1  ████················  avg=0.00
+    skit               0  ····················  avg=0.00
+    reaction           0  ····················  avg=0.00
+    pov                0  ····················  avg=0.00
+    hottake            0  ····················  avg=0.00
+    tip                0  ····················  avg=0.00
+    dayinlife          0  ····················  avg=0.00
+    beforeafter        0  ····················  avg=0.00
+    explainer          0  ····················  avg=0.00
+

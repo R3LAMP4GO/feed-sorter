@@ -113,6 +113,8 @@ export const toPost = (m, surface, pageScope = { kind: "other", username: null }
       ? `https://www.instagram.com/${isReel ? "reel" : "p"}/${shortcode}/`
       : "",
     surface,
+    platform: "instagram",
+    nativeId: id,
   };
 };
 

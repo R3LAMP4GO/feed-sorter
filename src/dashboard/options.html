@@ -1,0 +1,182 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Feed Sorter — Settings</title>
+<style>
+  :root {
+    --fg: #111827;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --bg: #ffffff;
+    --bg-soft: #f9fafb;
+    --accent: #16a34a;
+    --accent-soft: #d1fae5;
+    --warn: #b45309;
+    --err: #b91c1c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font: 14px -apple-system, system-ui, "Segoe UI", sans-serif;
+    margin: 0; color: var(--fg); background: var(--bg-soft);
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 32px 24px 64px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 20px; }
+  h1 { font-size: 22px; margin: 0; font-weight: 600; }
+  h2 { font-size: 13px; margin: 28px 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+  .card { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 18px 20px; margin-bottom: 16px; }
+  .card.muted { background: var(--bg-soft); }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 12px 0 4px; font-weight: 500; }
+  label:first-child { margin-top: 0; }
+  input[type="text"], input[type="password"], input[type="url"] {
+    width: 100%; padding: 8px 10px; font-size: 13px;
+    border: 1px solid #d1d5db; border-radius: 5px;
+    font-family: ui-monospace, SFMono-Regular, monospace; background: var(--bg);
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  button {
+    padding: 8px 14px; font-size: 13px; cursor: pointer;
+    border: 1px solid #d1d5db; background: var(--bg); border-radius: 5px;
+    font-weight: 500;
+  }
+  button:hover:not(:disabled) { background: #f3f4f6; }
+  button.primary { background: var(--accent); color: white; border-color: var(--accent); }
+  button.primary:hover:not(:disabled) { background: #15803d; }
+  button.danger { color: var(--err); border-color: #fecaca; }
+  button.danger:hover:not(:disabled) { background: #fee2e2; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .help { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.4; }
+  .help code { background: var(--bg-soft); padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; min-width: 0; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; background: #e5e7eb; color: #111; text-transform: uppercase; font-weight: 600; letter-spacing: 0.04em; }
+  .pill.pro, .pill.studio { background: var(--accent-soft); color: #065f46; }
+  .pill.ok { background: var(--accent-soft); color: #065f46; }
+  .pill.warn { background: #fef3c7; color: var(--warn); }
+  .pill.err { background: #fee2e2; color: var(--err); }
+  .save-status { font-size: 12px; color: var(--accent); margin-left: 10px; }
+  .err-text { color: var(--err); font-size: 12px; margin-top: 6px; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 14px; font-size: 13px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-family: ui-monospace, SFMono-Regular, monospace; word-break: break-all; }
+  details { margin-top: 8px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  details[open] summary { margin-bottom: 8px; }
+  hr { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Feed Sorter — Settings</h1>
+    <span id="acctTier" class="pill" style="display:none">free</span>
+  </header>
+
+  <!-- Account ------------------------------------------------------------ -->
+  <div class="card">
+    <h2 style="margin-top:0">Account</h2>
+    <div class="row">
+      <div class="grow">
+        <div id="acctStatus" style="font-weight: 500;">Checking…</div>
+        <div id="acctEmail" class="help"></div>
+      </div>
+      <button id="signin">Sign in / Connect</button>
+      <button id="openWeb">Open web app</button>
+    </div>
+    <div id="acctErr" class="err-text"></div>
+  </div>
+
+  <!-- Backend ------------------------------------------------------------ -->
+  <div class="card">
+    <h2 style="margin-top:0">Backend</h2>
+    <label>API base URL</label>
+    <input id="apiBaseUrl" type="url" placeholder="http://localhost:8787">
+    <div class="help">Where the extension sends sync + transcribe calls.</div>
+
+    <label>Web app URL</label>
+    <input id="appUrl" type="url" placeholder="http://localhost:3000">
+    <div class="help">Used by the &ldquo;Sign in / Connect&rdquo; button. Auto-derived from API URL when blank.</div>
+
+    <hr>
+    <div class="row">
+      <button id="saveBackend" class="primary">Save</button>
+      <span id="saveBackendStatus" class="save-status"></span>
+      <span class="grow"></span>
+      <span id="apiHealth" class="pill">…</span>
+    </div>
+    <details>
+      <summary>Backend status</summary>
+      <div class="kv" id="backendKV">
+        <div class="k">Tier</div><div class="v" id="bsTier">…</div>
+        <div class="k">Email</div><div class="v" id="bsEmail">…</div>
+        <div class="k">/healthz</div><div class="v" id="bsHealth">…</div>
+      </div>
+    </details>
+  </div>
+
+  <!-- Transcription ------------------------------------------------------ -->
+  <div class="card">
+    <h2 style="margin-top:0">Transcription</h2>
+    <p class="help" style="margin-top:0">
+      The extension prefers <strong>free platform captions</strong> first:
+      YouTube <code>captionTracks</code> and TikTok <code>subtitleInfos</code>
+      are fetched from the active session and stored as
+      <code>youtube-captions</code> / <code>tiktok-captions</code> — no audio
+      transfer, no API cost. Audio-based fallbacks (Instagram reels, videos
+      without captions) cascade through the providers below.
+    </p>
+
+    <label>WhisperX sidecar URL <span class="help" style="display:inline">(local, free)</span></label>
+    <input id="whisperxUrl" type="url" placeholder="http://localhost:8788">
+    <div class="help">
+      Local <code>sidecar/transcribe-server.py</code> running faster-whisper +
+      forced alignment. Recommended for development.
+    </div>
+
+    <label>Groq API key <span class="help" style="display:inline">(cloud Whisper, paid)</span></label>
+    <input id="groqKey" type="password" placeholder="gsk_…" autocomplete="off">
+    <div class="help">Used as a cascade fallback when WhisperX is unreachable. Leave blank to disable.</div>
+
+    <label>HuggingFace token <span class="help" style="display:inline">(optional)</span></label>
+    <input id="hfKey" type="password" placeholder="hf_…" autocomplete="off">
+
+    <hr>
+    <div class="row">
+      <button id="saveTranscribe" class="primary">Save</button>
+      <span id="saveTranscribeStatus" class="save-status"></span>
+      <span class="grow"></span>
+      <button id="testWhisperx">Test sidecar</button>
+      <span id="whisperxHealth" class="pill">…</span>
+    </div>
+  </div>
+
+  <!-- LLM / Embeddings --------------------------------------------------- -->
+  <div class="card">
+    <h2 style="margin-top:0">LLM &amp; Embeddings</h2>
+    <label>OpenAI API key <span class="help" style="display:inline">(embeddings)</span></label>
+    <input id="openaiKey" type="password" placeholder="sk-…" autocomplete="off">
+
+    <label>Ollama base URL <span class="help" style="display:inline">(local LLM)</span></label>
+    <input id="ollamaUrl" type="url" placeholder="http://localhost:11434">
+    <div class="help">For on-device Gemma rewrites, hook fingerprint, diagnose, repurpose pipeline.</div>
+
+    <hr>
+    <div class="row">
+      <button id="saveLLM" class="primary">Save</button>
+      <span id="saveLLMStatus" class="save-status"></span>
+    </div>
+  </div>
+
+  <!-- Danger zone -------------------------------------------------------- -->
+  <div class="card muted">
+    <h2 style="margin-top:0">Danger zone</h2>
+    <div class="row">
+      <button id="clearAll" class="danger">Clear all stored keys</button>
+      <span class="help">Wipes Groq / HF / OpenAI / WhisperX values from <code>chrome.storage.local</code>.</span>
+    </div>
+  </div>
+</div>
+
+<script src="options.js"></script>
+</body>
+</html>

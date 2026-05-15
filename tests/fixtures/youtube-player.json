@@ -1,0 +1,48 @@
+{
+  "videoDetails": {
+    "videoId": "abc123XYZ_-",
+    "title": "Morning routine that changed my life",
+    "lengthSeconds": "47",
+    "viewCount": "1234567",
+    "author": "Fit With Maya",
+    "channelId": "UCxxxxxxxxxxxxxxxxxxxxx",
+    "shortDescription": "I tried this for 30 days and the results blew me away. #morningroutine",
+    "thumbnail": {
+      "thumbnails": [
+        { "url": "https://i.ytimg.com/vi/abc123XYZ_-/default.jpg", "width": 120, "height": 90 },
+        { "url": "https://i.ytimg.com/vi/abc123XYZ_-/maxres.jpg", "width": 1280, "height": 720 }
+      ]
+    }
+  },
+  "streamingData": {
+    "formats": [
+      {
+        "itag": 22,
+        "url": "https://rr5---sn-example.googlevideo.com/videoplayback?expire=1&id=abc",
+        "mimeType": "video/mp4; codecs=\"avc1.64001F, mp4a.40.2\"",
+        "contentLength": "5242880"
+      }
+    ],
+    "adaptiveFormats": []
+  },
+  "captions": {
+    "playerCaptionsTracklistRenderer": {
+      "captionTracks": [
+        {
+          "baseUrl": "https://www.youtube.com/api/timedtext?v=abc123XYZ_-&lang=en",
+          "name": { "simpleText": "English (auto-generated)" },
+          "vssId": "a.en",
+          "languageCode": "en",
+          "kind": "asr"
+        },
+        {
+          "baseUrl": "https://www.youtube.com/api/timedtext?v=abc123XYZ_-&lang=es",
+          "name": { "simpleText": "Spanish" },
+          "vssId": ".es",
+          "languageCode": "es",
+          "kind": ""
+        }
+      ]
+    }
+  }
+}

@@ -3,7 +3,7 @@
   position: fixed;
   top: 80px;
   right: 16px;
-  width: 340px;
+  width: 420px;
   max-height: calc(100vh - 120px);
   background: #161823;
   color: #f1f1f2;
@@ -39,6 +39,48 @@
 }
 .fs-icon-btn:hover { background: #2a2b36; }
 .fs-icon-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
+
+/* Web-app sync button connection indicator. */
+.fs-sync-btn { display: inline-flex; align-items: center; gap: 5px; }
+.fs-conn-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: #6b7280; box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+.fs-conn-dot[data-state="on"] { background: #16a34a; box-shadow: 0 0 6px rgba(22,163,74,0.55); }
+.fs-conn-dot[data-state="off"] { background: #dc2626; }
+.fs-conn-dot[data-state="unknown"] { background: #9ca3af; animation: fs-pulse 1.4s ease-in-out infinite; }
+@keyframes fs-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+/* Header pin-creator button. Hidden outside of profile scope. */
+.fs-pin-btn { line-height: 1; }
+.fs-pin-btn.fs-pin-on {
+  color: #fdcb5c;
+  border-color: #6b5a2a;
+  background: rgba(253, 203, 92, 0.10);
+}
+.fs-pin-btn.fs-pin-on:hover { background: rgba(253, 203, 92, 0.18); }
+.fs-root:not(.fs-scope-profile) .fs-pin-btn { display: none; }
+.fs-root[data-view="niche"] .fs-pin-btn { display: none; }
+
+/* Transient header toast. */
+.fs-toast {
+  position: absolute;
+  left: 50%;
+  top: 36px;
+  transform: translateX(-50%) translateY(-4px);
+  background: #1f2030;
+  border: 1px solid #3a3b48;
+  color: #f1f1f2;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease, transform 120ms ease;
+  z-index: 10;
+  white-space: nowrap;
+}
+.fs-toast.fs-toast-on {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
 
 /* Tab strip */
 .fs-tabs {
@@ -331,6 +373,7 @@
 /* On Explore, Surface filter is irrelevant (everything is `explore`). */
 .fs-root.fs-scope-explore .fs-section-grid label[data-for="surface"] { display: none; }
 .fs-section-grid label.fs-search-label { grid-column: 1 / -1; }
+.fs-section-grid label[hidden] { display: none; }
 .fs-section-grid input[type="search"] { width: 100%; box-sizing: border-box; }
 
 .fs-section-grid select, .fs-section-grid input {
@@ -340,6 +383,17 @@
   border-radius: 5px;
   padding: 4px 6px;
   font-size: 12px;
+}
+
+/* Custom date range + custom limit (revealed when "Custom…" is picked). */
+.fs-section-grid label.fs-custom-range,
+.fs-section-grid label.fs-custom-limit {
+  font-size: 10.5px;
+  color: #8a8b96;
+}
+.fs-section-grid input[type="date"] {
+  color-scheme: dark;
+  font-family: inherit;
 }
 
 .fs-stats {
@@ -358,11 +412,11 @@
 }
 .fs-row {
   display: grid;
-  /* check | rank | thumb | meta | status | score | pin | dl */
-  grid-template-columns: 18px 20px 56px 1fr auto auto auto auto;
+  /* check | rank | thumb | meta | tx | audio | dl */
+  grid-template-columns: 18px 18px 56px 1fr auto auto auto;
   gap: 6px;
   align-items: center;
-  padding: 6px 10px;
+  padding: 10px 12px;
   border-bottom: 1px solid #20212c;
   color: inherit;
   position: relative;
@@ -374,7 +428,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 6px 0 2px 84px; /* align under meta column */
+  padding: 6px 0 2px 0;
 }
 .fs-note-input {
   background: #0f1018; color: #f1f1f2;
@@ -382,6 +436,8 @@
   padding: 6px 8px; font-size: 12px; resize: vertical;
   font-family: inherit; line-height: 1.4;
   min-height: 48px;
+  width: 100%;
+  box-sizing: border-box;
 }
 .fs-note-input:focus { outline: none; border-color: #6e8eff; }
 .fs-tag-row {
@@ -509,7 +565,19 @@
   font-size: 12px; color: #f1f1f2;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.fs-meta-line2 { display: block; font-size: 11px; color: #a8a9b3; margin-top: 2px; }
+.fs-meta-line2 {
+  display: block; font-size: 11px; color: #a8a9b3; margin-top: 2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.fs-meta-stats {
+  display: flex; flex-direction: column; gap: 1px;
+  margin-top: 3px;
+}
+.fs-meta-stat {
+  display: block; font-size: 11px; color: #a8a9b3;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .fs-score {
   font-size: 12px; font-weight: 600; color: #e1306c;
   font-variant-numeric: tabular-nums;
@@ -571,6 +639,38 @@
   cursor: wait;
   border-color: #4f8cff;
   color: #cfe0ff;
+}
+
+/* Transcript-source badge shown next to the 📝 row icon. */
+.fs-tx-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: lowercase;
+  border: 1px solid currentColor;
+  background: transparent;
+  line-height: 1.5;
+  vertical-align: middle;
+}
+.fs-tx-source-vtt     { color: #8be09a; }   /* green  — real captions */
+.fs-tx-source-alt     { color: #fdcb5c; }   /* yellow — description */
+.fs-tx-source-groq    { color: #c79bff; }   /* purple — Groq cloud   */
+.fs-tx-source-hf      { color: #f59e0b; }   /* orange — HF cloud     */
+.fs-tx-source-whisper { color: #79b8ff; }   /* blue   — local ASR    */
+
+/* Source line at the top of the expanded transcript block. */
+.fs-transcript-source {
+  margin: 4px 0 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  border-left: 2px solid currentColor;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.03);
 }
 
 /* Drawer transcript section. */
@@ -680,6 +780,18 @@
   border-color: #6b2c34;
   color: #ffb4bd;
 }
+.fs-footer .fs-bulk-tx-status {
+  flex: 0 0 100%;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: #c8d6ff;
+  font-variant-numeric: tabular-nums;
+}
+.fs-footer .fs-bulk-tx-counts { color: #e8e9ee; }
+.fs-footer .fs-bulk-tx-tier { color: #8a9bd0; font-size: 10px; }
 
 .fs-status {
   padding: 4px 10px;
@@ -924,6 +1036,11 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* Cap the expanded panel so it can't push the rest of the overlay out
+     of view — the body scrolls independently when its content overflows. */
+  max-height: 60vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .fs-stats-empty {
   font-size: 11px; color: #6a6b78; font-style: italic;
@@ -974,7 +1091,48 @@
   font-family: inherit;
 }
 .fs-stats-tag:hover { border-color: #6e8eff; color: #fff; }
+.fs-stats-tag-active { border-color: #6e8eff; background: #2a3454; color: #fff; }
 .fs-stats-tag-lift { color: #6e8eff; font-variant-numeric: tabular-nums; font-size: 10px; }
+
+/* Niche chip — purple accent. */
+.fs-stats-niche-chip {
+  background: #1a1b27;
+  border: 1px solid #2a2b36;
+  color: #c8c9d3;
+  font-size: 11px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 5px;
+  align-items: baseline;
+  font-family: inherit;
+}
+.fs-stats-niche-chip:hover { border-color: #b478ff; color: #fff; }
+.fs-stats-niche-chip.fs-stats-tag-active { border-color: #b478ff; background: #2e2042; color: #fff; }
+.fs-stats-niche-chip .fs-stats-tag-lift { color: #b478ff; }
+
+/* Format chip — teal accent. */
+.fs-stats-format-chip {
+  background: #1a1b27;
+  border: 1px solid #2a2b36;
+  color: #c8c9d3;
+  font-size: 11px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  gap: 5px;
+  align-items: baseline;
+  font-family: inherit;
+}
+.fs-stats-format-chip:hover { border-color: #4dd6c1; color: #fff; }
+.fs-stats-format-chip.fs-stats-tag-active { border-color: #4dd6c1; background: #1a3a36; color: #fff; }
+.fs-stats-format-chip .fs-stats-tag-lift { color: #4dd6c1; }
+
+.fs-stats-actions {
+  display: flex; align-items: center; gap: 8px; margin-top: 6px;
+}
 
 .fs-stats-svg {
   width: 100%;
@@ -1056,6 +1214,28 @@
 .fs-modal-body {
   padding: 12px 14px; overflow: auto; flex: 1 1 auto;
 }
+
+/* Settings modal (gear button) */
+.fs-settings { max-width: 520px; }
+.fs-settings h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: #9ca3af; margin: 16px 0 6px; }
+.fs-settings h4 .muted { font-size: 10px; text-transform: none; letter-spacing: 0; color: #6b7280; font-weight: 400; margin-left: 4px; }
+.fs-settings label { display: block; font-size: 11px; color: #c9cad6; margin: 8px 0 3px; font-weight: 500; }
+.fs-settings input[type="text"], .fs-settings input[type="url"], .fs-settings input[type="password"] {
+  width: 100%; box-sizing: border-box; padding: 6px 8px; font-size: 12px;
+  background: #15161e; color: #f1f1f2; border: 1px solid #3a3b48; border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, monospace; outline: none;
+}
+.fs-settings input:focus { border-color: #6e8eff; }
+.fs-settings .fs-help { font-size: 10px; color: #9ca3af; margin-top: 3px; }
+.fs-settings .fs-settings-section { padding: 8px 10px; background: #15161e; border: 1px solid #2a2b38; border-radius: 6px; margin-bottom: 4px; }
+.fs-settings-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.fs-settings-row .fs-icon-btn { width: auto; }
+.fs-settings-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; padding-top: 10px; border-top: 1px solid #2a2b38; }
+.fs-settings-actions .fs-icon-btn.fs-primary { background: #16a34a; border-color: #16a34a; color: white; }
+.fs-settings-actions .fs-icon-btn.fs-primary:hover { background: #15803d; }
+.fs-tier-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 10px; background: #2a2b38; color: #c9cad6; text-transform: uppercase; font-weight: 600; letter-spacing: 0.04em; }
+.fs-tier-pill.fs-tier-pro { background: #064e3b; color: #6ee7b7; }
+.fs-settings .muted { color: #9ca3af; font-size: 11px; }
 .fs-cmp-grid {
   display: grid; gap: 10px;
   grid-template-columns: repeat(var(--fs-cmp-n, 2), minmax(0, 1fr));
@@ -1332,4 +1512,51 @@
 .fs-pl-fatal {
   background: #2a0f10; border: 1px solid #6a2a2a; color: #ffb1b1;
   padding: 10px 12px; border-radius: 6px; margin-bottom: 10px; font-size: 12px;
+}
+
+/* -------- Tier gate — upgrade chip + card.
+   Shown when the signed-in user is on the free tier and the surface
+   they're touching is Pro-only (transcription, Explore overlay). */
+.fs-icon-btn.fs-upgrade-chip,
+.fs-tx-btn.fs-upgrade-chip {
+  background: #1a1428;
+  border-color: #5b3f7a;
+  color: #d6c4ff;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.fs-icon-btn.fs-upgrade-chip:hover,
+.fs-tx-btn.fs-upgrade-chip:hover {
+  background: #2a1a4a;
+  border-color: #8a6cd6;
+  color: #e9defc;
+}
+
+/* On Explore + free, the scroll-list + stats panel are replaced by the
+   upgrade card. Header, filters, and status row stay so the user can
+   navigate away. */
+.fs-root.fs-locked-explore .fs-stats-section,
+.fs-root.fs-locked-explore .fs-stats { display: none; }
+.fs-upgrade-card {
+  margin: 12px;
+  padding: 24px 20px;
+  background: linear-gradient(180deg, #1a1428 0%, #15161e 100%);
+  border: 1px solid #5b3f7a;
+  border-radius: 10px;
+  text-align: center;
+}
+.fs-upgrade-card-icon { font-size: 32px; line-height: 1; margin-bottom: 12px; }
+.fs-upgrade-card-title { font-size: 14px; font-weight: 600; color: #e9defc; margin-bottom: 8px; }
+.fs-upgrade-card-body { font-size: 12px; color: #a8a9b3; line-height: 1.5; margin: 0 0 16px 0; }
+.fs-upgrade-card .fs-upgrade-cta {
+  background: #7c3aed;
+  border-color: #7c3aed;
+  color: #ffffff;
+  font-weight: 600;
+  padding: 6px 18px;
+  font-size: 13px;
+}
+.fs-upgrade-card .fs-upgrade-cta:hover {
+  background: #6d28d9;
+  border-color: #6d28d9;
 }

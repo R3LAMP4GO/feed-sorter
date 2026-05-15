@@ -1,0 +1,17 @@
+
+cluster-niches  •  /Users/imorgado/Downloads/feed-sorter-instagram/tmp/library-export.json
+creators: 62/1056  •  posts: 1694  •  sim: 0.45  •  min-posts/creator: 3
+(dropped 994 creators with < 3 posts — too thin for TF-IDF)
+
+clustered in 11ms
+
+─── tail (62 clusters with < 3 creators, 62 creators total) ───
+    singletons: 62
+    unlabeled cluster present: true
+
+─── summary ───
+  shown clusters (≥3 creators):  0
+  total clusters:                       62
+  largest cluster:                      1 creators (que / por / con)
+  creators in top-10 clusters:          10 / 62
+

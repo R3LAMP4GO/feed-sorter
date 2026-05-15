@@ -26,6 +26,7 @@
   const PLATFORMS = Object.freeze({
     INSTAGRAM: "instagram",
     TIKTOK: "tiktok",
+    YOUTUBE: "youtube",
   });
 
   const num = (v) => (typeof v === "number" ? v : Number(v) || 0);
@@ -124,6 +125,30 @@
     return first.replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim();
   };
 
+  // IG video duration. Reels expose `video_duration` (float seconds) at the
+  // top level. Falls back to clips_metadata.original_sound_info.duration_in_ms
+  // (audio length ≈ video length on reels), then audio_metadata.duration_in_ms.
+  // Returns null when no signal is available so downstream classifiers can
+  // distinguish "unknown" from "zero".
+  const igDuration = (m) => {
+    if (typeof m.video_duration === "number" && m.video_duration > 0) {
+      return m.video_duration;
+    }
+    if (m.video_versions && Array.isArray(m.video_versions)) {
+      for (const v of m.video_versions) {
+        if (typeof v?.duration === "number" && v.duration > 0) return v.duration;
+      }
+    }
+    const cm = m.clips_metadata;
+    if (cm) {
+      const osiMs = cm.original_sound_info?.duration_in_ms;
+      if (typeof osiMs === "number" && osiMs > 0) return osiMs / 1000;
+      const amMs = cm.audio_metadata?.duration_in_ms;
+      if (typeof amMs === "number" && amMs > 0) return amMs / 1000;
+    }
+    return null;
+  };
+
   const igAudio = (m) => {
     const cm = m.clips_metadata;
     if (!cm) return null;
@@ -210,6 +235,7 @@
       platform: "instagram",
       audio: igAudio(m),
       audioClusterId: String(m.clips_metadata?.audio_ranking_info?.best_audio_cluster_id ?? ""),
+      durationSec: igDuration(m),
       usertags: igUsertags(m),
       coauthors: igCoauthors(m),
       location: igLocation(m),
@@ -310,6 +336,23 @@
   const ttShares = (m) => num(m.stats?.shareCount ?? m.statsV2?.shareCount);
   const ttSaves = (m) => num(m.stats?.collectCount ?? m.statsV2?.collectCount);
 
+  const ttCaptions = (m) => {
+    const arr = m.video?.subtitleInfos;
+    if (!Array.isArray(arr) || arr.length === 0) {
+      return { captionUrl: "", captionFormat: "", captionSource: "", captionLang: "" };
+    }
+    const en = arr.find(
+      (s) => s && typeof s.LanguageCodeName === "string" && s.LanguageCodeName.toLowerCase().startsWith("en")
+    );
+    const pick = en || arr[0];
+    return {
+      captionUrl: str(pick?.Url),
+      captionFormat: str(pick?.Format).toLowerCase(),
+      captionSource: str(pick?.Source),
+      captionLang: str(pick?.LanguageCodeName),
+    };
+  };
+
   const ttAudio = (m) => {
     const mu = m.music;
     if (!mu || typeof mu !== "object") return null;
@@ -344,6 +387,7 @@
           ? `https://www.tiktok.com/@${a}/video/${native}`
           : "";
     const desc = ttCaption(m);
+    const caps = ttCaptions(m);
     return {
       id,
       nativeId: native,
@@ -373,6 +417,10 @@
       accessibilityCaption: "",
       carouselCount: 0,
       productType: "video",
+      captionUrl: caps.captionUrl,
+      captionFormat: caps.captionFormat,
+      captionSource: caps.captionSource,
+      captionLang: caps.captionLang,
     };
   };
 
@@ -400,6 +448,142 @@
     return found.map((m) => ttToPost(m, surface, pageScope));
   };
 
+  // ============ YouTube ============
+  // YT parser + scope live in their own runtime IIFEs (parser-youtube-runtime.js,
+  // scope-youtube-runtime.js) — both registered before us in manifest.json.
+  // We bind to those namespaces so the dispatcher stays in lock-step with
+  // src/lib/platform.js (ESM).
+
+  const YT_NS = global.FeedSorterYouTubeParser || {};
+  const YT_SCOPE_NS = global.FeedSorterYouTubeScope || {};
+
+  const ytDeriveScope = (pathname) =>
+    typeof YT_SCOPE_NS.deriveScope === "function"
+      ? YT_SCOPE_NS.deriveScope(pathname)
+      : { kind: "other", username: null, videoId: null };
+
+  // Resolve the user-facing UI surface stamped on posts. The `surface` arg
+  // here comes from surfaceFromUrlTag, which returns API-endpoint tags
+  // ("player", "next") for /youtubei/v1/player and /next. Those endpoints
+  // don't speak for the UI surface on their own — fall back to pageScope.kind
+  // (mirrors how IG /graphql is refined into "reels"/"profile"/"explore").
+  const ytResolveSurface = (urlSurface, pageScope) => {
+    if (urlSurface === "shorts-feed") return "shorts-feed";
+    const k = pageScope && pageScope.kind;
+    if (k && k !== "other") return k;
+    return urlSurface || "other";
+  };
+
+  // Dispatch over the three innertube response shapes:
+  //   /youtubei/v1/browse  → harvestBrowse: list of partial posts (one per shorts thumb)
+  //   /youtubei/v1/player  → playerToPost: one fully-hydrated post
+  //   /youtubei/v1/next    → enrichFromNext: partial post (likes/views/comments/uploadedAt)
+  //                          re-shaped so ingest's Math.max merger folds it
+  //                          into the row from /player.
+  const ytHarvest = (root, surface, pageScope) => {
+    const ps = pageScope || { kind: "other", username: null, videoId: null };
+    if (!root || typeof root !== "object") return [];
+    const userSurface = ytResolveSurface(surface, ps);
+
+    if (surface === "player" && typeof YT_NS.playerToPost === "function") {
+      const post = YT_NS.playerToPost(root, ps);
+      if (!post) return [];
+      post.surface = userSurface;
+      return [post];
+    }
+    if (surface === "next" && typeof YT_NS.enrichFromNext === "function") {
+      const enrich = YT_NS.enrichFromNext(root) || {};
+      // Re-shape into a partial post keyed by the videoId in pageScope so
+      // the ingest merge folds likes/views/comments/createTime onto the
+      // existing row from /player.
+      const nativeId = ps && ps.videoId ? String(ps.videoId) : "";
+      if (!nativeId) return [];
+      return [{
+        id: "yt_" + nativeId,
+        nativeId,
+        shortcode: nativeId,
+        author: ps.username || "",
+        likes: num(enrich.likes),
+        comments: num(enrich.comments),
+        views: num(enrich.views),
+        createTime: num(enrich.uploadedAt),
+        isReel: true,
+        cover: "",
+        videoUrl: "",
+        url: "https://www.youtube.com/shorts/" + nativeId,
+        surface: userSurface,
+        platform: "youtube",
+        audio: null,
+      }];
+    }
+    if (typeof YT_NS.harvestBrowse === "function") {
+      const posts = YT_NS.harvestBrowse(root, ps);
+      // harvestBrowse stamps surface from pageScope.kind; promote to the
+      // URL-tag-derived surface so /browse posts always land in the
+      // "shorts-feed" bucket regardless of which page the user is on.
+      for (const p of posts) p.surface = userSurface;
+      return posts;
+    }
+    return [];
+  };
+
+  const ytSurfaceFromTag = (url, tag) =>
+    typeof YT_NS.surfaceFromUrlTag === "function"
+      ? YT_NS.surfaceFromUrlTag(url || "", tag || "")
+      : "unknown";
+
+  const ytLooksLikeMedia = (o) =>
+    !!(o && typeof o === "object" && (o.videoId || (o.videoDetails && o.videoDetails.videoId)));
+
+  const ytToPost = (m, surface, pageScope) => {
+    if (!m || typeof m !== "object") return null;
+    if (m.videoDetails && typeof YT_NS.playerToPost === "function") {
+      return YT_NS.playerToPost(m, pageScope || { kind: "other", username: null });
+    }
+    return null;
+  };
+
+  // Snap-player navigation: tier-fall-through selectors used by every
+  // mainstream Shorts auto-scroller (Tyson3101/Auto-Youtube-Shorts-Scroller,
+  // SoRadGaming, YouTube-Enhancer, Archimetrix/Youtube-Pro-Plus).
+  const YT_NEXT_BUTTON_SELECTORS = Object.freeze([
+    "ytd-reel-video-renderer[is-active] #navigation-button-down button",
+    "#navigation-button-down ytd-button-renderer button",
+    "#navigation-button-down button",
+  ]);
+
+  const SCROLL_STRATEGY = Object.freeze({
+    kind: "scroll",
+    useScrollHeightStall: true,
+    advance(opts) {
+      const doc = (opts && opts.doc) || (typeof document !== "undefined" ? document : null);
+      if (!doc || !doc.documentElement) return false;
+      const w = doc.defaultView || (typeof window !== "undefined" ? window : null);
+      if (!w || typeof w.scrollTo !== "function") return false;
+      w.scrollTo(0, doc.documentElement.scrollHeight || 0);
+      return true;
+    },
+  });
+
+  const YT_SNAP_STRATEGY = Object.freeze({
+    kind: "snap",
+    useScrollHeightStall: false,
+    advance(opts) {
+      const doc = (opts && opts.doc) || (typeof document !== "undefined" ? document : null);
+      if (!doc || typeof doc.querySelector !== "function") return false;
+      for (const sel of YT_NEXT_BUTTON_SELECTORS) {
+        const btn = doc.querySelector(sel);
+        if (btn && typeof btn.click === "function" && !btn.disabled) {
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    },
+  });
+
+  const defaultCollectStrategy = () => SCROLL_STRATEGY;
+
   // ============ Configs ============
 
   const igConfig = {
@@ -415,6 +599,7 @@
       surfaceFromTag: igSurfaceFromTag,
       looksLikeMedia: igLooksLikeMedia,
     },
+    collectStrategy: defaultCollectStrategy,
     postUrl: (post) => {
       if (!post) return "";
       if (post.url) return post.url;
@@ -441,6 +626,7 @@
       surfaceFromTag: ttSurfaceFromTag,
       looksLikeMedia: ttLooksLikeMedia,
     },
+    collectStrategy: defaultCollectStrategy,
     postUrl: (post) => {
       if (!post) return "";
       if (post.url) return post.url;
@@ -455,12 +641,51 @@
       audioId ? `https://www.tiktok.com/music/-${encodeURIComponent(audioId)}` : "",
   };
 
+  const ytConfig = {
+    platform: PLATFORMS.YOUTUBE,
+    postIdPrefix: "yt_",
+    csvPrefix: "yt",
+    downloadFolder: "feed-sorter-yt",
+    surfaces: ["profile", "shorts-feed", "search"],
+    scope: { deriveScope: ytDeriveScope, RESERVED: new Set() },
+    parser: {
+      harvest: ytHarvest,
+      toPost: ytToPost,
+      surfaceFromTag: ytSurfaceFromTag,
+      looksLikeMedia: ytLooksLikeMedia,
+    },
+    // Snap player on /shorts/<id> + /feed/shorts; classic page-scroll
+    // on the channel /@handle/shorts grid + search.
+    collectStrategy: (pageScope) =>
+      pageScope && pageScope.kind === "shorts-feed" ? YT_SNAP_STRATEGY : SCROLL_STRATEGY,
+    postUrl: (post) => {
+      if (!post) return "";
+      if (post.url) return post.url;
+      const native = String(post.nativeId || post.shortcode || post.id || "").replace(/^yt_/, "");
+      return native ? `https://www.youtube.com/shorts/${native}` : "";
+    },
+    profileUrl: (username) =>
+      username ? `https://www.youtube.com/@${username}` : "https://www.youtube.com/",
+    audioUrl: () => "",
+  };
+
   const detectPlatform = (host, pathname) => {
     const h = String(host == null ? (global.location && global.location.host) || "" : host).toLowerCase();
     if (/(^|\.)tiktok\.com$/.test(h)) return PLATFORMS.TIKTOK;
     if (/(^|\.)instagram\.com$/.test(h)) return PLATFORMS.INSTAGRAM;
-    // Path-based fallback for localhost stubs: TikTok uses `/@user` URLs.
+    if (/(^|\.)youtube\.com$/.test(h)) return PLATFORMS.YOUTUBE;
+    // Path-based fallback for localhost stubs.
+    // YouTube wins when the path has a YT-specific shape:
+    //   - /shorts/<id>, /feed/shorts            (snap player / FYP)
+    //   - /@<handle>/(shorts|videos|community|playlists|featured|streams|posts)
+    //   - /channel/<id>, /c/<name>, /user/<name> (legacy creator URLs)
+    // Otherwise /@user or /foryou → TikTok (existing behavior).
     const p = String(pathname == null ? (global.location && global.location.pathname) || "" : pathname);
+    if (/^\/shorts\//.test(p) || /^\/feed\/shorts/.test(p)) return PLATFORMS.YOUTUBE;
+    if (/^\/@[\w.-]+\/(shorts|videos|community|playlists|featured|streams|posts)\b/.test(p)) {
+      return PLATFORMS.YOUTUBE;
+    }
+    if (/^\/(channel|c|user)\/[\w.-]+/.test(p)) return PLATFORMS.YOUTUBE;
     if (/^\/@[\w.]/.test(p) || /^\/foryou/.test(p)) return PLATFORMS.TIKTOK;
     return null;
   };
@@ -468,6 +693,7 @@
   const getConfig = (platform) => {
     if (platform === PLATFORMS.TIKTOK) return ttConfig;
     if (platform === PLATFORMS.INSTAGRAM) return igConfig;
+    if (platform === PLATFORMS.YOUTUBE) return ytConfig;
     return null;
   };
 

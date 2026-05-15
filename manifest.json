@@ -9,10 +9,17 @@
     "https://i.instagram.com/*",
     "https://www.tiktok.com/*",
     "https://*.tiktok.com/*",
+    "https://www.youtube.com/*",
+    "https://m.youtube.com/*",
+    "https://*.googlevideo.com/*",
+    "https://api.feedsorter.app/*",
+    "https://*.up.railway.app/*",
     "https://*/*",
     "http://localhost/*",
     "http://127.0.0.1/*",
-    "http://localhost:11434/*"
+    "http://localhost:11434/*",
+    "http://localhost:8787/*",
+    "http://localhost:3000/*"
   ],
   "background": { "service_worker": "background.js" },
   "content_scripts": [
@@ -20,7 +27,9 @@
       "matches": [
         "https://www.instagram.com/*",
         "https://www.tiktok.com/*",
-        "https://*.tiktok.com/*"
+        "https://*.tiktok.com/*",
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*"
       ],
       "js": [
         "src/lib/idb-umd.js",
@@ -28,8 +37,21 @@
         "src/lib/report.js",
         "src/lib/cluster.js",
         "src/lib/llm-bridge.js",
+        "src/lib/tier-gate-runtime.js",
+        "src/lib/api-client-runtime.js",
+        "src/lib/parser-youtube-runtime.js",
+        "src/lib/scope-youtube-runtime.js",
+        "src/lib/yt-transcript-runtime.js",
+        "src/lib/tt-transcript-runtime.js",
         "src/lib/platform-runtime.js",
+        "src/lib/post-analysis-runtime.js",
+        "src/lib/relevance-runtime.js",
         "src/lib/pipeline-runtime.js",
+        "src/lib/niche-cluster-posts-runtime.js",
+        "src/lib/bulk-transcribe-runtime.js",
+        "src/lib/visual-format-runtime.js",
+        "src/lib/profile-parser-runtime.js",
+        "src/lib/niche-signal-runtime.js",
         "src/store.js",
         "src/lib/unified.js",
         "src/sinks/index.js",
@@ -40,11 +62,24 @@
       ],
       "css": ["overlay.css"],
       "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "http://localhost:3000/*",
+        "http://127.0.0.1:3000/*",
+        "https://app.feedsorter.app/*"
+      ],
+      "js": ["src/lib/web-bridge-runtime.js"],
+      "run_at": "document_start"
     }
   ],
   "action": {
     "default_title": "Feed Sorter — open dashboard",
     "default_popup": "src/dashboard/popup.html"
+  },
+  "options_ui": {
+    "page": "src/dashboard/options.html",
+    "open_in_tab": true
   },
   "web_accessible_resources": [
     {
@@ -52,7 +87,9 @@
       "matches": [
         "https://www.instagram.com/*",
         "https://www.tiktok.com/*",
-        "https://*.tiktok.com/*"
+        "https://*.tiktok.com/*",
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*"
       ]
     },
     {
@@ -60,6 +97,8 @@
         "src/dashboard/index.html",
         "src/dashboard/dashboard.js",
         "src/dashboard/dashboard.css",
+        "src/dashboard/options.html",
+        "src/dashboard/options.js",
         "src/lib/unified.js"
       ],
       "matches": ["<all_urls>"]

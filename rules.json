@@ -88,5 +88,35 @@
       "urlFilter": "||tiktok.com/api/related/item_list/",
       "resourceTypes": ["xmlhttprequest", "other"]
     }
+  },
+  {
+    "id": 10, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "yt-player" }
+    ]},
+    "condition": {
+      "urlFilter": "||youtube.com/youtubei/v1/player",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
+    "id": 11, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "yt-next" }
+    ]},
+    "condition": {
+      "urlFilter": "||youtube.com/youtubei/v1/next",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
+    "id": 12, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "yt-shorts" }
+    ]},
+    "condition": {
+      "urlFilter": "||youtube.com/youtubei/v1/browse",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
   }
 ]

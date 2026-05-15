@@ -14,6 +14,8 @@ import {
   buildUserContent,
   descHashOf,
   _resetCache,
+  detectFormat,
+  FORMATS,
 } from "../../src/analysis/post-analysis.js";
 
 const mkPost = (over = {}) => ({
@@ -157,5 +159,79 @@ describe("analyzePost", () => {
   it("throws if chat returns no JSON", async () => {
     const chat = async () => ({ json: null });
     await expect(analyzePost(mkPost(), { chat })).rejects.toThrow(/no JSON/);
+  });
+});
+
+describe("detectFormat", () => {
+  it("exposes FORMATS as a stable enum array", () => {
+    expect(FORMATS).toEqual([
+      "list", "story", "tip", "tutorial", "hottake",
+      "reaction", "dayinlife", "beforeafter", "other",
+    ]);
+  });
+
+  it("detects list from a digit-led caption", () => {
+    expect(detectFormat({ desc: "5 things you didn't know about sleep" })).toBe("list");
+    expect(detectFormat({ desc: "3. Drink water before coffee" })).toBe("list");
+  });
+
+  it("detects list from 3+ bullet/numbered lines", () => {
+    const desc = "Here we go:\n- one\n- two\n• three";
+    expect(detectFormat({ desc })).toBe("list");
+    const numbered = "Recap:\n1. alpha\n2. beta\n3. gamma";
+    expect(detectFormat({ desc: numbered })).toBe("list");
+  });
+
+  it("detects tutorial from caption keywords or numbered transcript steps", () => {
+    expect(detectFormat({ desc: "How to fix your sleep in 7 days" })).toBe("tutorial");
+    expect(detectFormat({ desc: "A complete guide to macros" })).toBe("tutorial");
+    expect(detectFormat({
+      desc: "watch this",
+      transcriptSegments: [{ text: "Step 1, mix the eggs." }],
+    })).toBe("tutorial");
+  });
+
+  it("detects beforeafter from before+after or transformation/results", () => {
+    expect(detectFormat({ desc: "before vs after — 12 weeks of training" })).toBe("beforeafter");
+    expect(detectFormat({ desc: "my transformation took two years" })).toBe("beforeafter");
+    expect(detectFormat({ desc: "results from my 30-day cut" })).toBe("beforeafter");
+  });
+
+  it("detects dayinlife from routine phrases", () => {
+    expect(detectFormat({ desc: "day in my life as a dev" })).toBe("dayinlife");
+    expect(detectFormat({ desc: "my morning routine that changed everything" })).toBe("dayinlife");
+    expect(detectFormat({ desc: "daily routine of a CEO" })).toBe("dayinlife");
+  });
+
+  it("detects reaction from react/watching/my thoughts on", () => {
+    expect(detectFormat({ desc: "reacting to the worst diet advice on tiktok" })).toBe("reaction");
+    expect(detectFormat({ desc: "my thoughts on the new iphone" })).toBe("reaction");
+    expect(detectFormat({ desc: "watching this go viral was wild" })).toBe("reaction");
+  });
+
+  it("detects hottake from unpopular opinion / hot take / controversial", () => {
+    expect(detectFormat({ desc: "unpopular opinion: cardio is overrated" })).toBe("hottake");
+    expect(detectFormat({ desc: "hot take incoming" })).toBe("hottake");
+    expect(detectFormat({ desc: "controversial but true" })).toBe("hottake");
+  });
+
+  it("detects tip from tip:/pro tip/quick tip or 'if you' opener", () => {
+    expect(detectFormat({ desc: "pro tip for new lifters" })).toBe("tip");
+    expect(detectFormat({ desc: "tip: drink water first thing" })).toBe("tip");
+    expect(detectFormat({ desc: "quick tip for editors" })).toBe("tip");
+    expect(detectFormat({ desc: "if you struggle to focus, try this" })).toBe("tip");
+  });
+
+  it("detects story from heavy first-person + ≥30 words", () => {
+    const desc = "I was broke and burnt out when I started my company. "
+      + "My partner believed in me and we kept going through every closed door. "
+      + "This is the part nobody tells you about ambition.";
+    expect(detectFormat({ desc })).toBe("story");
+  });
+
+  it("falls back to other when nothing matches", () => {
+    expect(detectFormat({ desc: "hello world" })).toBe("other");
+    expect(detectFormat({ desc: "" })).toBe("other");
+    expect(detectFormat({})).toBe("other");
   });
 });

@@ -131,6 +131,15 @@
   const PLATFORM_CSV_PREFIX = PLATFORM.csvPrefix;
   const PLATFORM_SOURCE = `feed-sorter-${PLATFORM_CSV_PREFIX}`;
 
+  // -------- tier gate --------
+  // Surfaces Pro-only features (transcription, Explore-page overlay). The
+  // runtime mirror in src/lib/tier-gate-runtime.js caches the tier so this
+  // is a sync truth-table check — fast enough to call once per row.
+  const proAccess = () => {
+    const tg = globalThis.FeedSorterTierGate;
+    return tg ? !!tg.isPro() : false;
+  };
+
   // -------- page scope --------
   // What page are we on? Drives ingest filtering + auto-collect gating.
   // Updated on SPA navs via patched history methods + popstate.
@@ -138,6 +147,28 @@
   let pageScope = { kind: "other", username: null };
 
   const deriveScope = () => PLATFORM.scope.deriveScope(location.pathname || "/");
+
+  // Per-session memo of usernames whose profile we've already requested
+  // from injected.js. Prevents re-firing the fetch on every tab focus /
+  // SPA back-nav. Page reload clears it (correct — we might want fresh bio).
+  const profileFetched = new Set();
+  const maybeFetchProfileInfo = () => {
+    if (pageScope.kind !== "profile" || !pageScope.username) return;
+    const u = String(pageScope.username).toLowerCase();
+    if (profileFetched.has(u)) return;
+    profileFetched.add(u);
+    try {
+      window.postMessage({
+        source: SOURCE,
+        kind: "fetch-profile",
+        platform: PLATFORM.platform,
+        username: u,
+      }, "*");
+      logInfo("profile.fetch.request", { username: u, platform: PLATFORM.platform });
+    } catch (e) {
+      logWarn("profile.fetch.request.fail", e, { username: u });
+    }
+  };
 
   const onScopeMaybeChanged = () => {
     const next = deriveScope();
@@ -155,6 +186,9 @@
     setStatus(pageScope.kind === "other" ? "idle (off-feed page)" : "idle");
     // Rehydrate from IDB for the new scope (or all-time if toggle is set).
     rehydrateFromStore().catch((e) => logError("store.rehydrate.fail", e));
+    // Trigger an explicit profile-info fetch so the bio cascade has data
+    // to embed. No-op on non-profile pages.
+    maybeFetchProfileInfo();
   };
 
   // SPA nav detection: monkey-patch history (guarded) + popstate.
@@ -213,10 +247,23 @@
     return uni ? inter / uni : 0;
   };
 
+  // IG's profile-reels tab and modern profile feed both come through
+  // /graphql/query, which surfaceFromUrlTag tags generically as "graphql".
+  // Promote that to the real bucket using the live URL + page scope so the
+  // surface dropdown ("reels" / "profile" / "explore") actually matches.
+  const refineSurface = (surface) => {
+    if (surface !== "graphql") return surface;
+    const path = (location && location.pathname) || "";
+    if (/\/reels\/?$/.test(path)) return "reels";
+    if (pageScope.kind === "profile") return "profile";
+    if (pageScope.kind === "explore") return "explore";
+    return surface;
+  };
+
   const ingest = (raw, url, tag) => {
     let json;
     try { json = JSON.parse(raw); } catch { return 0; }
-    const surface = surfaceFromUrlTag(url || "", tag || "");
+    const surface = refineSurface(surfaceFromUrlTag(url || "", tag || ""));
     const items = harvestPosts(json, surface);
     let added = 0;
     let droppedScope = 0;
@@ -256,6 +303,16 @@
       posts.set(p.id, merged);
       sessionIds.add(p.id);
       toPersist.push(merged);
+      // Auto-tag posts collected from the Explore surface so users can
+      // tell at a glance where a row originated. Idempotent: only writes
+      // when the tag isn't already present in cached meta.
+      if (merged.surface === "explore") {
+        const curMeta = metaCache.get(p.id) || { tags: [] };
+        const curTags = curMeta.tags || [];
+        if (!curTags.includes("explore")) {
+          writeMetaNow(p.id, { tags: [...curTags, "explore"] });
+        }
+      }
     }
     if (droppedScope) logDebug("ingest.dropped", { scope: pageScope.kind, dropped: droppedScope });
     // Queue any newly-ingested posts for cross-creator hook-similarity scan.
@@ -323,6 +380,37 @@
         return;
       }
     });
+    // Popup-initiated sync: the popup has no access to this page's IDB,
+    // so it asks the active tab to do the read + dispatch.
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (!msg || msg.type !== "fs-popup") return;
+      if (msg.cmd === "sync-from-page") {
+        const storeRef = (typeof window !== "undefined" && window.__fsStore) || null;
+        const read = storeRef && typeof storeRef.getAll === "function"
+          ? storeRef.getAll()
+          : Promise.resolve([]);
+        read
+          .then((rows) => {
+            const all = Array.isArray(rows) ? rows : [];
+            if (!all.length) {
+              sendResponse({ ok: false, err: "empty store — collect first" });
+              return;
+            }
+            chrome.runtime.sendMessage(
+              { type: "fs-bg", cmd: "api.sync-posts", posts: all },
+              (r) => {
+                if (chrome.runtime.lastError) {
+                  sendResponse({ ok: false, err: chrome.runtime.lastError.message });
+                  return;
+                }
+                sendResponse(r || { ok: false, err: "no response" });
+              },
+            );
+          })
+          .catch((err) => sendResponse({ ok: false, err: String(err && err.message || err) }));
+        return true; // async response
+      }
+    });
   } catch (e) {
     // chrome.runtime can be undefined when the extension context is
     // invalidated (e.g. mid-reload). Non-fatal.
@@ -334,15 +422,105 @@
     if (!data || data.source !== SOURCE) return;
     if (data.kind === "feed-response" && typeof data.body === "string") {
       const before = posts.size;
+      const surface = refineSurface(surfaceFromUrlTag(data.url, data.tag));
+      // Profile-info branch (bio-first niche cascade). IG `web_profile_info`
+      // and TT `api/user/detail` carry just the user object — no items —
+      // so we route to profile-parser-runtime.js and persist bio/category/
+      // externalUrl/fullName on the matching creators row. The cascade in
+      // background.js (clusterNiches) reads these fields next pass and
+      // picks `bio` as the embedding source when present + rich enough.
+      const PP = globalThis.__fsProfileParser;
+      if (PP && (PP.isInstagramProfileInfoUrl(data.url) || PP.isTikTokProfileInfoUrl(data.url))) {
+        try {
+          const parsed = PP.parseProfile(JSON.parse(data.body), data.url);
+          if (parsed && parsed.username && window.__fsStore && window.__fsStore.addCreator) {
+            const at = Date.now();
+            // Category-as-niche shortcut: IG business accounts carry a
+            // category_name ("Real Estate Agent", "Fitness Trainer", etc.)
+            // that's a better niche label than anything we'd cluster from
+            // captions. Use it directly. _autoNiche=true so this never
+            // overrides a label the user manually pinned.
+            const patch = {
+              bio: parsed.bio || "",
+              category: parsed.category || "",
+              fullName: parsed.fullName || "",
+              externalUrl: parsed.externalUrl || "",
+              bioCapturedAt: at,
+            };
+            if (parsed.category) {
+              patch.niche = parsed.category;
+              patch._autoNiche = true;
+            }
+            window.__fsStore.addCreator(parsed.username, patch).then(async () => {
+              const bioSnippet = (parsed.bio || "").slice(0, 80);
+              logInfo("profile.capture", {
+                username: parsed.username,
+                platform: parsed.platform,
+                bioWords: PP.nicheTextWordCount(PP.profileToNicheText(parsed)),
+                category: parsed.category || null,
+                bioSnippet,
+                externalUrl: parsed.externalUrl || null,
+                followerCount: parsed.followerCount,
+                fullName: parsed.fullName || null,
+              });
+              if (parsed.category) {
+                // Backfill: stamp niche on every existing post by this
+                // creator. renderStats reads post.niche, not creator.niche,
+                // so without this the NICHES chip stays "No labels yet."
+                // nicheBasis "author" = inherited from the creator-level
+                // signal (bio/category), per store.js NICHE_BASES.
+                let backfilled = 0;
+                try {
+                  const myPosts = await window.__fsStore.getByAuthor(parsed.username);
+                  for (const p of myPosts) {
+                    if (!p || !p.id) continue;
+                    // Don't clobber a post.niche that was set by the
+                    // post-level pipeline (more specific than creator-level).
+                    if (typeof p.niche === "string" && p.niche) continue;
+                    try { await window.__fsStore.setPostNiche(p.id, parsed.category, "author"); backfilled++; }
+                    catch (e) { logWarn("niche.backfill.post.fail", e, { id: p.id }); }
+                  }
+                } catch (e) { logWarn("niche.backfill.read.fail", e, { username: parsed.username }); }
+                logInfo("niche.set-from-category", {
+                  username: parsed.username,
+                  niche: parsed.category,
+                  source: "ig-category",
+                  postsBackfilled: backfilled,
+                });
+                // Repaint the overlay so the NICHES section flips from
+                // "No niche labels yet" to the new chip immediately.
+                try { typeof reloadCreators === "function" && reloadCreators(); } catch { /* not in scope yet */ }
+                try { typeof render === "function" && render(); } catch { /* boot race */ }
+              }
+            }).catch((e) => logWarn("profile.capture.fail", e, { username: parsed.username }));
+          } else if (!parsed) {
+            logWarn("profile.parse.empty", { url: String(data.url || "").slice(0, 120) });
+          }
+        } catch (e) {
+          logWarn("profile.parse.fail", e, { url: String(data.url || "").slice(0, 120) });
+        }
+        return;
+      }
+      // Always log the response arrival so users can diagnose "0 posts"
+      // states (e.g. wrong scope, parser missing items, off-feed page).
+      const urlTail = String(data.url || "").replace(/^https?:\/\/[^/]+/, "").slice(0, 120);
+      let parsed = 0;
+      try { parsed = harvestPosts(JSON.parse(data.body), surface).length; } catch {}
       ingest(data.body, data.url, data.tag);
       const added = posts.size - before;
-      if (added > 0) logInfo("capture", {
+      const payload = {
         platform: PLATFORM.platform,
-        surface: surfaceFromUrlTag(data.url, data.tag),
+        surface,
         tag: data.tag || "",
+        url: urlTail,
+        parsed,
         added,
         total: posts.size,
-      });
+        scope: pageScope.kind,
+      };
+      if (added > 0) logInfo("capture", payload);
+      else if (parsed === 0) logWarn("ingest.empty", payload);
+      else logInfo("ingest.no-new", payload);
       return;
     }
     if (data.kind === "cmd") {
@@ -536,7 +714,17 @@
   // -------- auto-collector --------
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const IDLE_MS = 8000;
+  // When the user set an explicit limit and we haven't reached it yet, be
+  // far more patient before giving up on "end of feed" — the platform may
+  // be slow to load the next page or briefly stall.
+  const IDLE_MS_BELOW_LIMIT = 30000;
   const STEP_MS = 1500;
+  const COLLECT_TIMEOUT_MS = 5 * 60 * 1000;
+  const COLLECT_TIMEOUT_BELOW_LIMIT_MS = 30 * 60 * 1000;
+  // Hard end-of-feed signal: when the document scrollHeight has stopped
+  // growing for this long despite repeated scroll attempts, the page has
+  // bottomed out and we stop regardless of any unmet limit.
+  const SCROLL_HEIGHT_STALL_MS = 10000;
 
   const collector = {
     running: false,
@@ -546,18 +734,28 @@
   };
 
   const oldestInScope = () => {
+    const sessionOnly = state.scope === "session";
     let oldest = Infinity;
     for (const p of posts.values()) {
-      if (state.surface !== "all" && p.surface !== state.surface) continue;
+      if (sessionOnly && !sessionIds.has(p.id)) continue;
+      if (state.surface !== "all" && !matchesSurface(p, state.surface)) continue;
       if (p.createTime && p.createTime < oldest) oldest = p.createTime;
     }
     return oldest === Infinity ? 0 : oldest;
   };
 
   const inScopeCount = () => {
-    if (state.surface === "all") return posts.size;
+    // Match what the user sees as "in scope": respect both the surface
+    // filter and the session/alltime scope toggle. Otherwise rehydrated
+    // posts already in IDB satisfy the limit before the first scroll.
+    const sessionOnly = state.scope === "session";
+    if (state.surface === "all" && !sessionOnly) return posts.size;
     let n = 0;
-    for (const p of posts.values()) if (p.surface === state.surface) n++;
+    for (const p of posts.values()) {
+      if (sessionOnly && !sessionIds.has(p.id)) continue;
+      if (state.surface !== "all" && !matchesSurface(p, state.surface)) continue;
+      n++;
+    }
     return n;
   };
 
@@ -582,9 +780,26 @@
     collector.startedAt = Date.now();
     const preIds = new Set(posts.keys());
 
-    const days = RANGES[state.range];
-    const cutoff = days ? Date.now() / 1000 - days * 86400 : 0;
+    const { from: cutoff, to: cutoffTo } = rangeCutoffs();
     const limit = state.limit;
+
+    // Per-platform / per-scope advance strategy. IG, TT, YT-channel-grid all
+    // get the default scroll strategy (page-scroll until scrollHeight stalls).
+    // YT shorts-feed gets the snap strategy (click #navigation-button-down).
+    // Falls back to a synthetic scroll strategy if a platform forgot to
+    // declare one — keeps behavior bit-for-bit with the pre-strategy code.
+    const strategy = (typeof PLATFORM.collectStrategy === "function"
+      ? PLATFORM.collectStrategy(pageScope)
+      : null) || {
+        kind: "scroll",
+        useScrollHeightStall: true,
+        advance({ doc }) {
+          const d = doc || document;
+          if (!d || !d.documentElement) return false;
+          window.scrollTo(0, d.documentElement.scrollHeight || 0);
+          return true;
+        },
+      };
 
     logInfo("collect.start", {
       trigger,
@@ -594,22 +809,45 @@
       cutoffISO: cutoff ? new Date(cutoff * 1000).toISOString() : null,
       limit,
       url: location.pathname,
+      strategy: strategy.kind,
     });
     setStatus("collecting…");
 
     let lastCount = inScopeCount();
     let stagnantSince = Date.now();
     let scrolls = 0;
+    let maxScrollHeight = document.documentElement.scrollHeight || 0;
+    let heightGrewAt = Date.now();
 
     while (!collector.abort) {
-      window.scrollTo(0, document.documentElement.scrollHeight);
+      const advanced = strategy.advance({ doc: document });
       scrolls++;
       await sleep(STEP_MS);
 
-      if (scrolls % 3 === 0) {
+      // The scroll-list jiggle (scroll-up-then-down) un-sticks IG/TT virtual
+      // lists that occasionally fail to fire their next page request. It
+      // doesn't apply to the snap player (fixed-height document), so skip it.
+      if (strategy.kind === "scroll" && scrolls % 3 === 0) {
         window.scrollBy(0, -400);
         await sleep(200);
         window.scrollTo(0, document.documentElement.scrollHeight);
+      }
+
+      // Snap players (fixed-height document) signal end-of-feed by returning
+      // false from advance() — e.g. when #navigation-button-down disappears
+      // at the bottom of the FYP. Treat as immediate end-of-feed.
+      if (strategy.kind === "snap" && advanced === false) {
+        collector.reason = "end-of-feed";
+        break;
+      }
+
+      // Track scrollHeight growth as an end-of-feed signal independent of
+      // post counts. If the page can't grow any taller, there's nothing
+      // left to load — stop even if the user-set limit isn't reached.
+      const sh = document.documentElement.scrollHeight || 0;
+      if (sh > maxScrollHeight) {
+        maxScrollHeight = sh;
+        heightGrewAt = Date.now();
       }
 
       const cur = inScopeCount();
@@ -632,12 +870,30 @@
         collector.reason = "date-cutoff-reached";
         break;
       }
-      if (Date.now() - stagnantSince > IDLE_MS) {
+      // Hard end-of-feed: scrollHeight hasn't grown for a while AND no
+      // new posts arrived recently. This wins over the patient
+      // below-limit budget so we don't spin forever on a creator who has
+      // fewer posts than the requested limit. Skipped on snap players
+      // where the document height is fixed (the snap-advanced=false path
+      // above handles end-of-feed there).
+      const heightStalled = Date.now() - heightGrewAt > SCROLL_HEIGHT_STALL_MS;
+      const noNewPostsRecent = Date.now() - stagnantSince > IDLE_MS;
+      if (strategy.useScrollHeightStall && heightStalled && noNewPostsRecent) {
+        collector.reason = "end-of-feed";
+        break;
+      }
+      // While the user-set limit hasn't been reached, be patient: extend
+      // the idle window and overall timeout so the collector keeps
+      // scrolling until it actually hits the goal (or truly stalls).
+      const belowLimit = limit > 0 && cur < limit;
+      const idleBudget = belowLimit ? IDLE_MS_BELOW_LIMIT : IDLE_MS;
+      const timeoutBudget = belowLimit ? COLLECT_TIMEOUT_BELOW_LIMIT_MS : COLLECT_TIMEOUT_MS;
+      if (Date.now() - stagnantSince > idleBudget) {
         collector.reason = "idle-end-of-feed";
         break;
       }
-      if (Date.now() - collector.startedAt > 5 * 60 * 1000) {
-        collector.reason = "timeout-5min";
+      if (Date.now() - collector.startedAt > timeoutBudget) {
+        collector.reason = belowLimit ? "timeout-30min" : "timeout-5min";
         break;
       }
     }
@@ -708,33 +964,80 @@
     return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
   };
 
-  // Outlier score = value / baseline.
-  // Per-author median when the author has ≥2 samples (proper "this post vs
-  // their typical"). Otherwise fall back to the global median across the
-  // current list — meaningful on Explore where each author has 1 post.
+  // Outlier score = value / baseline. Two-tier baseline (mirrors
+  // src/lib/scoring.js — keep them in lock-step):
+  //   1. ±5 sliding median over createTime-sorted neighbours, when the
+  //      author has ≥MIN_AUTHOR_POSTS_FOR_WINDOW posts in scope. This is
+  //      time-local: a creator who grew 10× doesn't have ancient low-view
+  //      posts dragging the baseline down (1of10's algorithm).
+  //   2. Author all-time median across the visible scope.
+  //   3. Global median (Explore / single-sample fallback).
+  // _scoreBasis labels: "window" | "author" | "global" | "none".
   const MIN_SAMPLES = 2;
+  const WINDOW_RADIUS = 5;
+  const MIN_AUTHOR_POSTS_FOR_WINDOW = 12;
+  const MIN_WINDOW_SAMPLES = 4;
   const computeOutliers = (list, metric) => {
     const byAuthor = new Map();
-    const globalVals = [];
-    for (const p of list) {
-      const v = p[metric] || 0;
-      if (v > 0) globalVals.push(v);
+    const globalPositives = [];
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i];
+      const v = Number(p[metric]) || 0;
+      if (v > 0) globalPositives.push(v);
       const k = p.author || "_unknown";
       if (!byAuthor.has(k)) byAuthor.set(k, []);
-      byAuthor.get(k).push(v);
+      byAuthor.get(k).push({ p, idx: i, v });
     }
-    const globalMed = median(globalVals);
-    const meds = new Map();
-    for (const [a, vals] of byAuthor) {
-      const positive = vals.filter((x) => x > 0);
-      meds.set(a, positive.length >= MIN_SAMPLES ? median(positive) : 0);
+    const globalMed = median(globalPositives);
+    const authorMeds = new Map();
+    for (const [a, rows] of byAuthor) {
+      const positives = rows.map((r) => r.v).filter((x) => x > 0);
+      authorMeds.set(a, positives.length >= MIN_SAMPLES ? median(positives) : 0);
     }
-    return list.map((p) => {
-      const authorMed = meds.get(p.author || "_unknown") || 0;
-      const baseline = authorMed || globalMed;
-      const score = baseline > 0 ? (p[metric] || 0) / baseline : 0;
-      return { ...p, _score: score, _scoreBasis: authorMed ? "author" : "global" };
-    });
+    const out = new Array(list.length);
+    for (const [a, rows] of byAuthor) {
+      const authorMed = authorMeds.get(a) || 0;
+      const useWindow = rows.length >= MIN_AUTHOR_POSTS_FOR_WINDOW;
+      const chrono = useWindow
+        ? [...rows].sort((x, y) => {
+            const ax = Number(x.p.createTime) || 0;
+            const ay = Number(y.p.createTime) || 0;
+            if (ax !== ay) return ay - ax;
+            return x.idx - y.idx;
+          })
+        : null;
+      for (let j = 0; j < rows.length; j++) {
+        const { p, idx, v } = rows[j];
+        let baseline = 0;
+        let basis = "none";
+        if (useWindow) {
+          const ci = chrono.findIndex((r) => r.idx === idx);
+          const lo = Math.max(0, ci - WINDOW_RADIUS);
+          const hi = Math.min(chrono.length, ci + WINDOW_RADIUS + 1);
+          const neighbours = [];
+          for (let k = lo; k < hi; k++) {
+            if (k === ci) continue;
+            if (chrono[k].v > 0) neighbours.push(chrono[k].v);
+          }
+          if (neighbours.length >= MIN_WINDOW_SAMPLES) {
+            baseline = median(neighbours);
+            basis = "window";
+          }
+        }
+        if (!baseline) {
+          if (authorMed > 0) {
+            baseline = authorMed;
+            basis = "author";
+          } else if (globalMed > 0) {
+            baseline = globalMed;
+            basis = "global";
+          }
+        }
+        const score = baseline > 0 ? v / baseline : 0;
+        out[idx] = { ...p, _score: score, _scoreBasis: baseline > 0 ? basis : "none" };
+      }
+    }
+    return out;
   };
 
   // -------- UI --------
@@ -750,6 +1053,77 @@
 
   const RANGES = { all: 0, "1w": 7, "1m": 30, "3m": 90, "6m": 180, "1y": 365 };
 
+  // VPH since posted = views / hours-since-creation. Baseline-free signal
+  // that surfaces "this is accumulating views fast for its age" without
+  // needing per-author history. Used as the default sort on Explore.
+  // Lower-bounds the divisor at 1 hour so a just-posted reel doesn't get
+  // an absurd score from a near-zero denominator.
+  const vphSincePosted = (p) => {
+    const views = Number(p.views) || 0;
+    const created = Number(p.createTime) || 0;
+    if (!views || !created) return 0;
+    const ageHrs = Math.max(1, (Date.now() / 1000 - created) / 3600);
+    return views / ageHrs;
+  };
+
+  // Normalize a possibly-millisecond timestamp to seconds.
+  // Some API paths surface taken_at in ms; comparing those against a
+  // seconds-based cutoff would either include or exclude *all* posts.
+  const toSec = (t) => {
+    const n = Number(t) || 0;
+    if (n <= 0) return 0;
+    return n > 1e12 ? Math.floor(n / 1000) : Math.floor(n);
+  };
+
+  // Apply the active range to a list. Posts with no known createTime are
+  // *kept* (date unknown → give benefit of the doubt) so a working dataset
+  // doesn't collapse to zero just because the parser missed a field.
+  const applyRangeFilter = (list) => {
+    const { from, to } = rangeCutoffs();
+    if (!from && !to) return list;
+    let dropped = 0;
+    const out = list.filter((p) => {
+      const t = toSec(p.createTime);
+      if (!t) return true;
+      if (from && t < from) { dropped++; return false; }
+      if (to && t > to) { dropped++; return false; }
+      return true;
+    });
+    if (dropped && applyRangeFilter._lastDropped !== dropped) {
+      applyRangeFilter._lastDropped = dropped;
+      logDebug("filter.range.drop", { dropped, kept: out.length, from, to });
+    }
+    return out;
+  };
+
+  // Resolve the active range to {from, to} cutoff seconds (epoch). 0 = open-ended.
+  // For preset ranges, only `from` is used (relative to now). For "custom",
+  // both bounds are read from state.rangeFrom / state.rangeTo (YYYY-MM-DD).
+  const rangeCutoffs = () => {
+    if (state.range === "custom") {
+      const fromS = state.rangeFrom
+        ? Math.floor(new Date(state.rangeFrom + "T00:00:00").getTime() / 1000)
+        : 0;
+      const toS = state.rangeTo
+        ? Math.floor(new Date(state.rangeTo + "T23:59:59").getTime() / 1000)
+        : 0;
+      return { from: fromS, to: toS };
+    }
+    const days = RANGES[state.range];
+    return { from: days ? Math.floor(Date.now() / 1000 - days * 86400) : 0, to: 0 };
+  };
+
+  // Mirror of matchesSurface() in src/lib/filter.js — IG profile-reels now
+  // serves reels through /graphql/query (surface="graphql"), so the "reels"
+  // bucket must match by isReel rather than strict surface equality.
+  const matchesSurface = (p, target) => {
+    if (!target || target === "all") return true;
+    const s = p.surface;
+    if (target === "reels") return p.isReel === true || s === "reels";
+    if (target === "profile") return !p.isReel && (s === "profile" || s === "graphql");
+    return s === target;
+  };
+
   const els = {};
   /** @type {{username:string,niche:string,addedAt:number,lastScrapedAt:number,scrapeIntervalHrs:number,autoCollect:boolean}[]} */
   let creators = [];
@@ -757,7 +1131,11 @@
     sort: "outlier",
     metric: "likes",
     range: "all",
+    rangeFrom: "",   // YYYY-MM-DD; only used when range === "custom"
+    rangeTo: "",     // YYYY-MM-DD; only used when range === "custom"
     limit: 0,
+    limitCustom: false, // true when the user picked "Custom…" in the Limit select
+    limitCustomValue: 0, // last typed value for the custom Limit input
     surface: "all",
     scope: "session", // "session" | "alltime"
     logLevel: "info",
@@ -773,7 +1151,12 @@
     hasNote: false,
     hasTranscript: false,
     statsSectionOpen: false,
+    nicheClusterBusy: false,
+    nicheClusterStatus: "",
     hashtagFilter: null,
+    keywordFilter: null, // single caption keyword — set by clicking a Stats keyword chip
+    nicheFilter: null,  // single niche label — set by clicking a Stats niche chip
+    formatFilter: null, // single format value (FORMATS) — set by clicking a Stats format chip
     hasAi: false,
     hookTypeFilter: null,
     topicFilter: null,
@@ -817,17 +1200,44 @@
     outlierThresh: 3,
     bulkZip: false, // toggle in settings; requires JSZip on window
     bulk: { running: false, cancel: false, done: 0, total: 0, fail: 0 },
-    // Sidecar transcribe (faster-whisper).
-    transcribeUrl: "http://localhost:8787",
+    // Sidecar transcribe (faster-whisper). Port 8788 — the API uses 8787, the
+    // sidecar must run on a different port (sidecar/transcribe-server.py default
+    // collided; we run it as `FS_WHISPER_PORT=8788 python transcribe-server.py`).
+    transcribeUrl: "http://localhost:8788",
+    // Cascade override: "auto" | "free-only" | "cloud-only" | "sidecar-only".
+    // Forces a specific tier (or set of tiers) for testing/debugging.
+    transcribeMode: "auto",
+    // Cloud BYOK transcription (Groq Whisper-Large-v3-Turbo). Persisted under
+    // fs:transcribeCloud, kept separate from fs:ai because LLM and STT are
+    // different services with different keys.
+    transcriptCloud: { groqApiKey: "", hfApiKey: "", hfFallbackOnRateLimit: false },
+    groqHealth: { ok: null, msg: "", checkedAt: 0 },
+    hfHealth: { ok: null, msg: "", checkedAt: 0 },
     transcribeStatus: { ok: null, msg: "", model: "", checkedAt: 0 },
     transcribeBulk: { running: false, cancel: false, done: 0, total: 0, fail: 0 },
+    // Visible-feed bulk transcribe (footer button). Distinct from transcribeBulk
+    // (top-N outliers via the radar bar) — this one walks the entire visible
+    // list and is rate-limited to <30 RPM so it can't trip Groq's free tier.
+    bulkTx: { running: false, cancel: false, done: 0, skipped: 0, failed: 0, total: 0, last: null },
     transcribeInflight: new Set(), // post ids being transcribed right now
-    // Local LLM (Ollama). Persisted under fs:ai. No cloud, no keys.
+    // LLM config. Persisted under fs:ai. Provider can be:
+    //   "groq"  — cloud, BYOK (key reused from state.transcriptCloud.groqApiKey)
+    //   "ollama" — local, opt-in "Power Mode" (the original default)
     ai: {
+      provider: "ollama", // migrated to "groq" the first time a Groq key is set
+      // Ollama (local).
       endpoint: "http://localhost:11434",
       model: "gemma4",
       visionModel: "gemma4",
       concurrency: 2,
+      // Groq (cloud).
+      groq: {
+        model: "llama-3.3-70b-versatile",
+        fastModel: "llama-3.1-8b-instant",
+        // 1h cache of /openai/v1/models so we don't hammer the API on every
+        // settings open. Cleared whenever the key changes.
+        modelsCache: { fetchedAt: 0, models: [] },
+      },
     },
     aiHealth: { ok: null, msg: "", models: [], checkedAt: 0 },
     // "Me" — the user's own IG handle. When set, repurpose-rewrites pull THIS
@@ -852,7 +1262,7 @@
   // -------- shareable URL hash --------
   // Persist user-facing filter/sort state in `location.hash` so views are
   // copy-pasteable. focusedIdx + logLevel are session-local and excluded.
-  const HASH_KEYS = ["sort", "groupBy", "metric", "range", "limit", "surface", "scope", "q", "pinnedOnly", "statusFilter", "hasNote", "hasTranscript", "hashtagFilter", "hasAi", "hookTypeFilter", "topicFilter", "angleFilter"];
+  const HASH_KEYS = ["sort", "groupBy", "metric", "range", "rangeFrom", "rangeTo", "limit", "limitCustom", "limitCustomValue", "surface", "scope", "q", "pinnedOnly", "statusFilter", "hasNote", "hasTranscript", "hashtagFilter", "keywordFilter", "nicheFilter", "formatFilter", "hasAi", "hookTypeFilter", "topicFilter", "angleFilter"];
   const b64uEncode = (s) => btoa(unescape(encodeURIComponent(s)))
     .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   const b64uDecode = (s) => {
@@ -918,6 +1328,7 @@
       els.reportBtn.hidden = !profileScope;
       els.reportBtn.dataset.username = profileScope ? pageScope.username : "";
     }
+    updatePinBtn();
     if (els.root) {
       els.root.classList.toggle("fs-scope-explore", pageScope.kind === "explore");
       els.root.classList.toggle("fs-scope-profile", pageScope.kind === "profile");
@@ -928,7 +1339,72 @@
         const sel = els.root.querySelector('[data-ctl="surface"]');
         if (sel) sel.value = "all";
       }
+      // Hide the "Explore" surface option on profile + explore pages —
+      // profiles never contain explore-tagged posts, and the explore page
+      // itself only surfaces posts/reels (the filter is redundant there).
+      const exploreOpt = els.root.querySelector('[data-ctl="surface"] option[value="explore"]');
+      if (exploreOpt) {
+        const hideExplore = pageScope.kind === "profile" || pageScope.kind === "explore";
+        exploreOpt.hidden = hideExplore;
+        exploreOpt.disabled = hideExplore;
+        if (hideExplore && state.surface === "explore") {
+          state.surface = "all";
+          const sel = els.root.querySelector('[data-ctl="surface"]');
+          if (sel) sel.value = "all";
+        }
+      }
+      // On Explore the outlier score is meaningless (every post has a
+      // different author with no baseline). Hide the option and default
+      // sort to VPH (views/hour since posted), which needs no baseline.
+      const outlierOpt = els.root.querySelector('[data-ctl="sort"] option[data-sort-outlier]');
+      if (outlierOpt) {
+        const isExplore = pageScope.kind === "explore";
+        outlierOpt.hidden = isExplore;
+        outlierOpt.disabled = isExplore;
+        if (isExplore && state.sort === "outlier") {
+          state.sort = "vph";
+          const sel = els.root.querySelector('[data-ctl="sort"]');
+          if (sel) sel.value = "vph";
+          syncHash();
+        }
+      }
     }
+  };
+
+  // Reflect web-app connection state on the Sync button.
+  // Asks SW for current token+baseUrl, then validates by hitting /v1/me.
+  // Listens to chrome.storage.onChanged for live updates after /connect.
+  const initWebAppConnIndicator = (root) => {
+    const apply = (state) => {
+      const btn = root.querySelector('[data-act="sync-webapp"]');
+      if (!btn) return;
+      btn.setAttribute("data-conn", state); // 'on' | 'off' | 'unknown'
+      const dot = btn.querySelector("[data-conn-dot]");
+      if (dot) dot.setAttribute("data-state", state);
+      btn.title =
+        state === "on" ? "Sync collected posts to the web app" :
+        state === "off" ? "Not connected to web app \u2014 click to connect" :
+        "Web app status unknown";
+    };
+    const refresh = () => {
+      try {
+        chrome.runtime.sendMessage({ type: "fs-bg", cmd: "api.config" }, (cfg) => {
+          if (chrome.runtime.lastError || !cfg) return apply("unknown");
+          if (!cfg.token) return apply("off");
+          chrome.runtime.sendMessage({ type: "fs-bg", cmd: "api.request", path: "/v1/me" }, (r) => {
+            if (chrome.runtime.lastError || !r) return apply("unknown");
+            apply(r.ok && r.body && r.body.id ? "on" : "off");
+          });
+        });
+      } catch (_) { apply("unknown"); }
+    };
+    refresh();
+    try {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area !== "local") return;
+        if (changes["fs.api.token"] || changes["fs.api.baseUrl"]) refresh();
+      });
+    } catch (_) {}
   };
 
   const buildUI = () => {
@@ -938,11 +1414,11 @@
     root.innerHTML = `
       <div class="fs-header" data-drag>
         <span class="fs-title" data-title>Feed Sorter · IG</span>
-        <button class="fs-icon-btn" data-act="radar" data-radar-btn title="Outlier Radar (cross-creator)">📡</button>
         <button class="fs-icon-btn fs-signals-bell" data-act="signals" data-signals-btn title="Signals — cross-creator hook reuse" hidden>🔔<span class="fs-tab-badge" data-signals-badge hidden>0</span></button>
         <button class="fs-icon-btn" data-act="report" data-report-btn title="Generate PDF report for this profile" hidden>📄</button>
-        <button class="fs-icon-btn" data-act="share" title="Copy view link">🔗</button>
+        <button class="fs-icon-btn fs-pin-btn" data-act="pin-creator" data-pin-btn title="Pin creator to watchlist" hidden>📌</button>
         <button class="fs-icon-btn" data-act="help" title="Keyboard shortcuts (?)">?</button>
+        <button class="fs-icon-btn" data-act="settings" title="Web app + dev settings">⚙</button>
         <button class="fs-icon-btn" data-act="collapse" title="Collapse">–</button>
         <button class="fs-icon-btn" data-act="clear" title="Re-scan this page">⟳</button>
       </div>
@@ -954,8 +1430,10 @@
         <div class="fs-section-grid">
           <label>Sort by
             <select data-ctl="sort">
-              <option value="outlier">Outlier score</option>
-              <option value="velocity">Velocity (views/hr)</option>
+              <option value="relevance" data-sort-relevance>Relevance (smart)</option>
+              <option value="outlier" data-sort-outlier>Outlier score</option>
+              <option value="vph">VPH (views ÷ age)</option>
+              <option value="velocity">Velocity (views/hr, snapshots)</option>
               <option value="likes">Likes</option>
               <option value="views">Views</option>
               <option value="comments">Comments</option>
@@ -963,7 +1441,7 @@
               <option value="recent">Most recent</option>
             </select>
           </label>
-          <label>Outlier metric
+          <label data-metric-label hidden>Outlier metric
             <select data-ctl="metric">
               <option value="likes">Likes</option>
               <option value="views">Views</option>
@@ -992,6 +1470,7 @@
               <option value="3m">Past 3 months</option>
               <option value="6m">Past 6 months</option>
               <option value="1y">Past year</option>
+              <option value="custom">Custom…</option>
             </select>
           </label>
           <label>Limit
@@ -1002,7 +1481,17 @@
               <option value="100">100</option>
               <option value="200">200</option>
               <option value="1000">1000</option>
+              <option value="custom">Custom…</option>
             </select>
+          </label>
+          <label class="fs-custom-range" data-custom-range hidden>From
+            <input data-ctl="rangeFrom" type="date" />
+          </label>
+          <label class="fs-custom-range" data-custom-range hidden>To
+            <input data-ctl="rangeTo" type="date" />
+          </label>
+          <label class="fs-custom-limit" data-custom-limit hidden style="grid-column: 1 / -1;">Custom limit (videos)
+            <input data-ctl="limitCustomValue" type="number" min="0" step="1" placeholder="e.g. 75" />
           </label>
         </div>
         <div class="fs-chips" data-chips>
@@ -1010,6 +1499,9 @@
           <button class="fs-chip fs-chip-ai" data-chip="topic" type="button" hidden data-topic-chip>topic</button>
           <button class="fs-chip fs-chip-ai" data-chip="angle" type="button" hidden data-angle-chip>angle</button>
           <button class="fs-chip fs-chip-hashtag" data-chip="hashtag" type="button" hidden data-hashtag-chip>#tag</button>
+          <button class="fs-chip fs-chip-hashtag" data-chip="keyword" type="button" hidden data-keyword-chip>kw</button>
+          <button class="fs-chip fs-chip-niche" data-chip="niche" type="button" hidden data-niche-chip>niche</button>
+          <button class="fs-chip fs-chip-format" data-chip="format" type="button" hidden data-format-chip>fmt</button>
         </div>
       </div>
       <details class="fs-stats-section" data-stats-section>
@@ -1026,11 +1518,6 @@
       <div class="fs-status" data-status>idle</div>
       <div class="fs-batch" data-batch hidden>
         <span class="fs-batch-count" data-batch-count>0 selected</span>
-        <button class="fs-icon-btn" data-act="batch-download" title="Download selected videos">Download</button>
-        <button class="fs-icon-btn" data-act="batch-sync" title="Sync selected to webapp">Sync</button>
-        <button class="fs-icon-btn" data-act="batch-copy" title="Copy URLs to clipboard">Copy URLs</button>
-        <button class="fs-icon-btn" data-act="batch-clear" title="Clear selection">Clear</button>
-        <span class="fs-batch-sep"></span>
         <button class="fs-batch-link" data-act="batch-all" title="Select all visible rows">Select all visible</button>
         <button class="fs-batch-link" data-act="batch-none" title="Select none">Select none</button>
       </div>
@@ -1046,6 +1533,9 @@
               <option value="error">error</option>
             </select>
             <button class="fs-icon-btn" data-act="export-logs" title="Export logs">Export</button>
+            <button class="fs-icon-btn" data-act="export-library" title="Export entire library as JSON for offline analysis" data-export-library>Export library</button>
+            <button class="fs-icon-btn" data-act="niche-cluster" title="Auto-cluster creators into niches via MiniLM embeddings (~30–60s on first run)" data-niche-cluster-trigger>⚙ Cluster niches</button>
+            <span class="fs-niche-cluster-status" data-niche-cluster-status></span>
           </span>
         </summary>
         <div class="fs-log-panel" data-logs></div>
@@ -1053,8 +1543,14 @@
       <div class="fs-footer">
         <button class="fs-icon-btn" data-act="collect">Collect all</button>
         <button class="fs-icon-btn" data-act="stop">Stop</button>
-        <button class="fs-icon-btn" data-act="sync-webapp" title="Sync collected posts to the webapp">Sync to webapp</button>
+        <button class="fs-icon-btn fs-sync-btn" data-act="sync-webapp" data-conn="unknown" title="Sync collected posts to the webapp"><span class="fs-conn-dot" data-conn-dot></span> Sync</button>
+        <button class="fs-icon-btn" data-act="bulk-tx-visible" data-bulk-tx-btn title="Transcribe every visible post that doesn't already have a transcript">📝 Bulk transcribe</button>
+        <button class="fs-icon-btn fs-bulk-cancel" data-act="bulk-tx-visible-cancel" data-bulk-tx-cancel hidden title="Cancel bulk transcribe">Cancel</button>
         <span class="fs-bulk-status" data-sync-status hidden></span>
+        <div class="fs-bulk-tx-status" data-bulk-tx-status hidden>
+          <span class="fs-bulk-tx-counts" data-bulk-tx-counts></span>
+          <span class="fs-bulk-tx-tier" data-bulk-tx-tier></span>
+        </div>
       </div>
       <div class="fs-sounds-panel" data-sounds-panel hidden>
         <div class="fs-sounds-bar">
@@ -1157,7 +1653,40 @@
         </label>
         </details>
         <details class="fs-set-section">
+          <summary>Free transcription (cloud)</summary>
+        <label class="fs-set-row fs-set-row-wide">Groq API key
+          <input data-ctl="groqApiKey" type="password" placeholder="gsk_…" autocomplete="off" spellcheck="false" />
+        </label>
+        <div class="fs-set-row">
+          <span>Status</span>
+          <span class="fs-tx-health" data-groq-health data-level="unknown">not checked</span>
+          <button class="fs-icon-btn" data-act="groq-test" title="GET /openai/v1/models with this key">Test key</button>
+        </div>
+        <div class="fs-set-info">Get a free API key at <code>console.groq.com</code> — 2,000 transcriptions/day, no credit card required. The key is stored locally in this browser; transcription requests go straight from the extension to api.groq.com.</div>
+        <label class="fs-set-row fs-set-row-wide">HuggingFace token
+          <input data-ctl="hfApiKey" type="password" placeholder="hf_…" autocomplete="off" spellcheck="false" />
+        </label>
+        <div class="fs-set-row">
+          <span>Status</span>
+          <span class="fs-tx-health" data-hf-health data-level="unknown">not checked</span>
+          <button class="fs-icon-btn" data-act="hf-test" title="GET /api/whoami-v2 with this token">Test key</button>
+        </div>
+        <label class="fs-set-row">Auto-fallback to HuggingFace when Groq is rate-limited
+          <input data-ctl="hfFallbackOnRateLimit" type="checkbox" />
+        </label>
+        <div class="fs-set-info">Get a free token at <code>huggingface.co/settings/tokens</code> — used as fallback when Groq is rate-limited.</div>
+        </details>
+        <details class="fs-set-section">
           <summary>Transcription sidecar</summary>
+        <label class="fs-set-row">Cascade mode
+          <select data-ctl="transcribeMode">
+            <option value="auto">auto (free → cloud → sidecar)</option>
+            <option value="free-only">free-only (TikTok VTT / IG alt)</option>
+            <option value="cloud-only">cloud-only (Groq + HF)</option>
+            <option value="sidecar-only">sidecar-only (local Whisper)</option>
+          </select>
+        </label>
+        <div class="fs-set-info">Force a specific tier for testing or debugging. "auto" runs the full cascade in order.</div>
         <label class="fs-set-row fs-set-row-wide">Sidecar URL
           <input data-ctl="transcribeUrl" type="url" placeholder="http://localhost:8787" autocomplete="off" />
         </label>
@@ -1168,8 +1697,33 @@
         </div>
         <div class="fs-set-info">Run <code>pip install -r requirements.txt &amp;&amp; python transcribe-server.py</code> in the <code>sidecar/</code> folder. Default port 8787.</div>
         </details>
-        <details class="fs-set-section">
-          <summary>Local AI (Ollama)</summary>
+        <details class="fs-set-section" open>
+          <summary>AI provider</summary>
+        <label class="fs-set-row">Provider
+          <select data-ctl="aiProvider">
+            <option value="groq">Groq (cloud, BYOK)</option>
+            <option value="ollama">Ollama (local, Power Mode)</option>
+          </select>
+        </label>
+        <div class="fs-set-info">Groq uses the same API key configured under <b>Free transcription (cloud)</b>. The key never leaves this browser — chat requests go straight from the extension to api.groq.com. Switch to Ollama if you prefer fully-local inference (no key, no network).</div>
+        <div data-ai-groq-block>
+          <label class="fs-set-row">Main model
+            <select data-ctl="aiGroqModel"></select>
+          </label>
+          <label class="fs-set-row">Fast model (per-post batch)
+            <select data-ctl="aiGroqFastModel"></select>
+          </label>
+          <div class="fs-set-row">
+            <span>Status</span>
+            <span class="fs-tx-health" data-ai-health data-level="unknown">not checked</span>
+            <button class="fs-icon-btn" data-act="ai-health" title="Ping /openai/v1/models with this key">Check</button>
+            <button class="fs-icon-btn" data-act="ai-groq-refresh" title="Re-fetch the Groq model list">Refresh models</button>
+            <button class="fs-icon-btn" data-act="ai-cache-clear" title="Drop all cached LLM responses">Clear AI cache</button>
+          </div>
+          <div class="fs-set-info">No Groq key set yet? Paste one under <b>Free transcription (cloud)</b> above — the same key powers chat and Whisper.</div>
+        </div>
+        <details class="fs-set-section" data-ai-ollama-block>
+          <summary>Power Mode (Ollama, local)</summary>
         <label class="fs-set-row fs-set-row-wide">Endpoint URL
           <input data-ctl="aiEndpoint" type="url" placeholder="http://localhost:11434" autocomplete="off" />
         </label>
@@ -1182,13 +1736,9 @@
         <label class="fs-set-row">Concurrency
           <input data-ctl="aiConcurrency" type="number" min="1" max="16" step="1" />
         </label>
-        <div class="fs-set-row">
-          <span>Status</span>
-          <span class="fs-tx-health" data-ai-health data-level="unknown">not checked</span>
-          <button class="fs-icon-btn" data-act="ai-health" title="Ping /api/tags on the configured endpoint">Check</button>
-          <button class="fs-icon-btn" data-act="ai-cache-clear" title="Drop all cached LLM responses">Clear AI cache</button>
-        </div>
+        <div class="fs-set-info">Status shown above — single badge reflects whichever provider is active.</div>
         <div class="fs-set-info">Run <code>ollama serve</code> and <code>ollama pull gemma4</code> (or <code>gemma3</code>). Nothing leaves this machine.</div>
+        </details>
         </details>
         <details class="fs-set-section">
           <summary>My voice (for repurpose)</summary>
@@ -1304,6 +1854,7 @@
     `;
     document.body.appendChild(root);
     els.root = root;
+    initWebAppConnIndicator(root);
     els.title = root.querySelector("[data-title]");
     els.list = root.querySelector("[data-list]");
     els.count = root.querySelector('[data-stat="count"]');
@@ -1330,10 +1881,19 @@
     els.nicheUsername = root.querySelector('[data-niche-username]');
     els.nicheNiche = root.querySelector('[data-niche-niche]');
     els.nicheAddCurrent = root.querySelector('[data-niche-add-current]');
-    els.nicheClusterStatus = root.querySelector('[data-niche-cluster-status]');
+    // querySelectorAll because we render the cluster trigger in two places now:
+    // the Logs tools row (always-visible) and the hidden niche panel.
+    els.nicheClusterStatus = root.querySelectorAll('[data-niche-cluster-status]');
     els.settingsPanel = root.querySelector('[data-settings-panel]');
     els.txHealth = root.querySelector('[data-tx-health]');
+    els.groqHealth = root.querySelector('[data-groq-health]');
+    els.hfHealth = root.querySelector('[data-hf-health]');
     els.aiHealth = root.querySelector('[data-ai-health]');
+    els.aiGroqBlock = root.querySelector('[data-ai-groq-block]');
+    els.aiOllamaBlock = root.querySelector('[data-ai-ollama-block]');
+    els.aiGroqModel = root.querySelector('[data-ctl="aiGroqModel"]');
+    els.aiGroqFastModel = root.querySelector('[data-ctl="aiGroqFastModel"]');
+    els.aiProvider = root.querySelector('[data-ctl="aiProvider"]');
     els.setInfo = root.querySelector('[data-set-info]');
     els.webhookStatus = root.querySelector('[data-webhook-status]');
     els.radar = root.querySelector('[data-radar]');
@@ -1341,10 +1901,14 @@
     els.radarSub = root.querySelector('[data-radar-sub]');
     els.radarBtn = root.querySelector('[data-radar-btn]');
     els.reportBtn = root.querySelector('[data-report-btn]');
+    els.pinBtn = root.querySelector('[data-pin-btn]');
     els.statsSection = root.querySelector('[data-stats-section]');
     els.statsBody = root.querySelector('[data-stats-body]');
     els.statsSub = root.querySelector('[data-stats-sub]');
     els.hashtagChip = root.querySelector('[data-hashtag-chip]');
+    els.keywordChip = root.querySelector('[data-keyword-chip]');
+    els.nicheChip = root.querySelector('[data-niche-chip]');
+    els.formatChip = root.querySelector('[data-format-chip]');
 
     if (els.statsSection) {
       els.statsSection.open = !!state.statsSectionOpen;
@@ -1357,6 +1921,19 @@
     updateHeader();
 
     let qDebounce = null;
+    const updateMetricVisibility = (sortVal) => {
+      const lbl = root.querySelector("[data-metric-label]");
+      if (!lbl) return;
+      lbl.hidden = sortVal !== "outlier";
+    };
+    // Show the From/To date inputs only when range === "custom";
+    // show the Custom limit number input only when state.limitCustom.
+    const updateCustomFilterVisibility = () => {
+      const showRange = state.range === "custom";
+      root.querySelectorAll("[data-custom-range]").forEach((el) => { el.hidden = !showRange; });
+      const lim = root.querySelector("[data-custom-limit]");
+      if (lim) lim.hidden = !state.limitCustom;
+    };
     const WEBHOOK_CTL_MAP = { whGeneric: "generic", whSlack: "slack", whDiscord: "discord", whAutoOnCollect: "autoOnCollect" };
     root.querySelectorAll("[data-ctl]").forEach((sel) => {
       const k = sel.dataset.ctl;
@@ -1378,6 +1955,12 @@
       else if (k === "hasFilter") {
         // Derive single-select value from the underlying booleans.
         sel.value = state.hasNote ? "note" : state.hasTranscript ? "transcript" : state.hasAi ? "ai" : "";
+      } else if (k === "limit") {
+        // The Limit select shows "custom" when the user is in custom mode;
+        // otherwise it mirrors the numeric state.limit.
+        sel.value = state.limitCustom ? "custom" : String(state.limit);
+      } else if (k === "limitCustomValue") {
+        sel.value = state.limitCustomValue ? String(state.limitCustomValue) : "";
       } else sel.value = String(state[k] ?? "");
       if (k === "transcribeUrl") {
         let txDebounce = null;
@@ -1389,6 +1972,81 @@
             // Re-check health against the new URL.
             checkSidecarHealth().catch(() => {});
           }, 400);
+        });
+        return;
+      }
+      if (k === "transcribeMode") {
+        sel.value = String(state.transcribeMode || "auto");
+        sel.addEventListener("change", () => {
+          const v = String(sel.value || "auto");
+          state.transcribeMode = VALID_TRANSCRIBE_MODES.has(v) ? v : "auto";
+          saveTranscribeConfig();
+        });
+        return;
+      }
+      if (k === "groqApiKey") {
+        sel.value = String(state.transcriptCloud.groqApiKey || "");
+        let groqDebounce = null;
+        sel.addEventListener("input", () => {
+          state.transcriptCloud.groqApiKey = String(sel.value || "").trim();
+          // A new key invalidates the previous health probe AND the cached
+          // Groq model list (since some keys may be limited to a subset).
+          setGroqHealth(null, "not checked");
+          state.ai.groq.modelsCache = { fetchedAt: 0, models: [] };
+          // First key paste auto-flips provider to Groq for new installs.
+          if (state.transcriptCloud.groqApiKey && state.ai.provider !== "groq" && !state.ai._providerExplicit) {
+            state.ai.provider = "groq";
+            applyProviderUi();
+            saveAiConfig();
+          }
+          if (state.ai.provider === "groq") setAiHealth(null, "not checked");
+          clearTimeout(groqDebounce);
+          groqDebounce = setTimeout(() => {
+            saveTranscriptCloudConfig();
+            if (state.ai.provider === "groq") {
+              refreshGroqModels().then(() => checkAiHealth()).catch(() => {});
+            }
+          }, 400);
+        });
+        return;
+      }
+      if (k === "aiProvider") {
+        sel.value = String(state.ai.provider || "ollama");
+        sel.addEventListener("change", () => {
+          const v = String(sel.value || "ollama");
+          state.ai.provider = (v === "groq" ? "groq" : "ollama");
+          state.ai._providerExplicit = true;
+          applyProviderUi();
+          saveAiConfig();
+          checkAiHealth().catch(() => {});
+        });
+        return;
+      }
+      if (k === "aiGroqModel" || k === "aiGroqFastModel") {
+        const which = k === "aiGroqModel" ? "model" : "fastModel";
+        sel.addEventListener("change", () => {
+          state.ai.groq[which] = String(sel.value || "").trim() || (which === "model" ? "llama-3.3-70b-versatile" : "llama-3.1-8b-instant");
+          saveAiConfig();
+          if (state.ai.provider === "groq") checkAiHealth().catch(() => {});
+        });
+        return;
+      }
+      if (k === "hfApiKey") {
+        sel.value = String(state.transcriptCloud.hfApiKey || "");
+        let hfDebounce = null;
+        sel.addEventListener("input", () => {
+          state.transcriptCloud.hfApiKey = String(sel.value || "").trim();
+          setHfHealth(null, "not checked");
+          clearTimeout(hfDebounce);
+          hfDebounce = setTimeout(() => { saveTranscriptCloudConfig(); }, 400);
+        });
+        return;
+      }
+      if (k === "hfFallbackOnRateLimit") {
+        sel.checked = !!state.transcriptCloud.hfFallbackOnRateLimit;
+        sel.addEventListener("change", () => {
+          state.transcriptCloud.hfFallbackOnRateLimit = !!sel.checked;
+          saveTranscriptCloudConfig();
         });
         return;
       }
@@ -1424,6 +2082,32 @@
         });
         return;
       }
+      // Custom date-range inputs (visible only when state.range === "custom").
+      if (k === "rangeFrom" || k === "rangeTo") {
+        sel.addEventListener("change", () => {
+          state[k] = String(sel.value || "");
+          logInfo("filter.change", { key: k, to: state[k] });
+          syncHash();
+          render();
+        });
+        return;
+      }
+      // Custom Limit number input (visible only when state.limitCustom).
+      if (k === "limitCustomValue") {
+        let limDebounce = null;
+        sel.addEventListener("input", () => {
+          const n = Math.max(0, Math.floor(Number(sel.value) || 0));
+          state.limitCustomValue = n;
+          if (state.limitCustom) state.limit = n;
+          clearTimeout(limDebounce);
+          limDebounce = setTimeout(() => {
+            logInfo("filter.change", { key: "limitCustomValue", to: n });
+            syncHash();
+            render();
+          }, 150);
+        });
+        return;
+      }
       if (k === "q") {
         sel.addEventListener("input", () => {
           state.q = sel.value;
@@ -1440,6 +2124,7 @@
       sel.addEventListener("change", () => {
         const old = state[k];
         const numericKeys = new Set(["limit", "radarLimit", "minScore", "signalsMinHistScore", "signalsMinSim", "signalsMaxAgeDays", "outlierThresh", "pipelineTopN"]);
+        if (k === "sort") updateMetricVisibility(sel.value);
         if (sel.type === "checkbox") {
           state[k] = !!sel.checked;
         } else if (k === "statusFilter") {
@@ -1452,6 +2137,24 @@
           logInfo("filter.change", { key: "hasFilter", to: sel.value || null });
           syncHash(); render();
           return;
+        } else if (k === "limit") {
+          // "custom" toggles a typeable input; any other value is numeric.
+          if (sel.value === "custom") {
+            state.limitCustom = true;
+            state.limit = state.limitCustomValue || 0;
+          } else {
+            state.limitCustom = false;
+            state.limit = Number(sel.value) || 0;
+          }
+          updateCustomFilterVisibility();
+          // Focus the typeable input for instant entry.
+          if (state.limitCustom) {
+            const inp = root.querySelector('[data-ctl="limitCustomValue"]');
+            if (inp) setTimeout(() => inp.focus(), 0);
+          }
+        } else if (k === "range") {
+          state.range = sel.value;
+          updateCustomFilterVisibility();
         } else {
           state[k] = numericKeys.has(k) ? Number(sel.value) : sel.value;
         }
@@ -1485,6 +2188,9 @@
         }
       });
     });
+
+    updateMetricVisibility(state.sort);
+    updateCustomFilterVisibility();
 
     // ---- Sink controls (data-sink-ctl="<sink>.<field>") ----
     root.querySelectorAll("[data-sink-ctl]").forEach((sel) => {
@@ -1528,6 +2234,51 @@
           syncHash();
           render();
         }
+      }
+      if (act === "stats-keyword") {
+        e.preventDefault();
+        const kw = t.dataset.keyword;
+        if (kw) {
+          state.keywordFilter = state.keywordFilter === kw ? null : kw;
+          logInfo("filter.change", { key: "keywordFilter", to: state.keywordFilter });
+          syncHash();
+          render();
+        }
+      }
+      if (act === "stats-niche") {
+        e.preventDefault();
+        const niche = t.dataset.niche;
+        if (niche) {
+          state.nicheFilter = state.nicheFilter === niche ? null : niche;
+          logInfo("filter.change", { key: "nicheFilter", to: state.nicheFilter });
+          syncHash();
+          render();
+        }
+      }
+      if (act === "stats-format") {
+        e.preventDefault();
+        const fmt = t.dataset.format;
+        if (fmt) {
+          state.formatFilter = state.formatFilter === fmt ? null : fmt;
+          logInfo("filter.change", { key: "formatFilter", to: state.formatFilter });
+          syncHash();
+          render();
+        }
+      }
+      if (act === "stats-detect-formats") {
+        e.preventDefault();
+        runDetectFormats();
+      }
+      if (act === "stats-detect-visual-format") {
+        e.preventDefault();
+        // Cover-AI is per-post + slow; cap at top 20 by outlier score so
+        // we don't burn ~minutes on huge scopes. The function already
+        // filters to posts with cover URL + _score >= 1.5.
+        analyzeCoversTopN(20);
+      }
+      if (act === "stats-cluster-niches") {
+        e.preventDefault();
+        labelNicheClusters();
       }
       if (act === "radar") { e.preventDefault(); toggleRadar(); }
       if (act === "radar-close") { e.preventDefault(); state.radar = false; updateView(); }
@@ -1585,6 +2336,7 @@
         render();
       }
       if (act === "niche-add-current") { e.preventDefault(); addCurrentCreator(); }
+      if (act === "pin-creator") { e.preventDefault(); togglePinCurrentCreator(); }
       if (act === "niche-add-manual") { e.preventDefault(); addManualCreator(); }
       if (act === "niche-rescrape-stale") { e.preventDefault(); rescrapeStale(); }
       if (act === "niche-cluster") { e.preventDefault(); runClusterNiches(); }
@@ -1636,10 +2388,106 @@
       if (act === "csv") { logInfo("export.csv", { rows: filtered().length }); exportCSV(); }
       if (act === "sync-webapp" || act === "batch-sync") {
         e.preventDefault();
-        setStatus("sync to webapp not configured yet");
-        logWarn("sync.webapp.todo", { msg: "webapp endpoint not yet wired" });
+        // If we know we're not connected, route the user to /connect instead
+        // of firing a guaranteed-401.
+        const btn = e.target.closest('[data-act="sync-webapp"]');
+        if (btn && btn.getAttribute("data-conn") === "off") {
+          chrome.runtime.sendMessage({ type: "fs-bg", cmd: "api.config" }, (cfg) => {
+            const base = (cfg && cfg.baseUrl) || "https://api.feedsorter.app";
+            const appUrl = base.includes("localhost") ? "http://localhost:3000" :
+              base.startsWith("https://api.") ? base.replace("https://api.", "https://app.") : base;
+            window.open(appUrl + "/connect", "_blank", "noopener");
+          });
+          setStatus("opening web app to connect…");
+          return;
+        }
+        setStatus("syncing to web app…");
+        const t0 = Date.now();
+        logInfo("sync.webapp.start", {});
+        // Read posts from the PAGE-origin IDB here in the content script
+        // (the SW lives in chrome-extension origin and can't see this DB).
+        // We pass the rows directly in the sync message.
+        const totalKnown = (typeof filtered === "function" ? filtered().length : 0);
+        console.groupCollapsed("%c[FeedSorter] sync \u2192 web app", "color:#16a34a;font-weight:600", "~" + totalKnown + " tracked posts");
+        console.log("endpoint: POST /v1/posts/sync");
+        // Guard against "Extension context invalidated" — thrown when the
+        // extension was reloaded but this tab still has the old content
+        // script. The fix is a tab refresh; surface that instead of an
+        // ugly uncaught throw.
+        if (!chrome.runtime || !chrome.runtime.id) {
+          setStatus("reload this tab \u2014 extension was updated");
+          logWarn("sync.webapp.fail", { err: "context-invalidated", hint: "refresh tab" });
+          console.error("[FeedSorter] sync aborted: extension was reloaded — refresh this tab (Cmd+R) to re-inject the new content script.");
+          console.groupEnd();
+          return;
+        }
+        let sent = false;
+        const sendIt = (postsToSend) => {
+          console.log("sending", postsToSend.length, "posts to SW (sample):", postsToSend[0]);
+          chrome.runtime.sendMessage({ type: "fs-bg", cmd: "api.sync-posts", posts: postsToSend }, (r) => {
+          const ms = Date.now() - t0;
+          if (chrome.runtime.lastError) {
+            const msg = chrome.runtime.lastError.message;
+            const ctxLost = /context invalidated|extension context/i.test(msg);
+            setStatus(ctxLost ? "reload this tab \u2014 extension was updated" : ("sync failed: " + msg));
+            logWarn("sync.webapp.fail", { err: msg, ctxLost });
+            console.error("[FeedSorter] sync transport failed", msg, ctxLost ? "— refresh this tab." : "");
+            console.groupEnd();
+            return;
+          }
+          if (!r || !r.ok) {
+            const err = (r && r.err) || "unknown";
+            const hint = err === "not-signed-in" ? " — click the extension icon → Sign in" : "";
+            setStatus("sync failed: " + err + hint);
+            logWarn("sync.webapp.fail", { err, hint });
+            console.error("[FeedSorter] sync rejected", { err, status: r && r.status, body: r && r.body });
+            console.groupEnd();
+            return;
+          }
+          setStatus(`synced ${r.inserted}/${r.total}` + (r.dropped ? ` (${r.dropped} dropped)` : ""));
+          logInfo("sync.webapp.ok", { total: r.total, inserted: r.inserted, dropped: r.dropped, batches: r.batches, ms });
+          console.log("%c\u2713 synced", "color:#16a34a", { total: r.total, inserted: r.inserted, dropped: r.dropped, batches: r.batches, ms });
+          if (r.sample) console.log("first batch sample (1 post):", r.sample);
+          console.groupEnd();
+        });
+          sent = true;
+        };
+        try {
+          const storeRef = (typeof window !== "undefined" && window.__fsStore) || null;
+          const readPosts = storeRef && typeof storeRef.getAll === "function"
+            ? storeRef.getAll()
+            : Promise.resolve([]);
+          readPosts
+            .then((rows) => {
+              const all = Array.isArray(rows) ? rows : [];
+              console.log("read from IDB", all.length, "posts; first id =", all[0] && all[0].id);
+              if (all.length === 0) {
+                setStatus("sync: no posts in store");
+                logWarn("sync.webapp.empty", { knownVisible: totalKnown });
+                console.warn("[FeedSorter] sync: store is empty (knownVisible=" + totalKnown + "). Are you on a page that has been collected?");
+                console.groupEnd();
+                return;
+              }
+              sendIt(all);
+            })
+            .catch((err) => {
+              const msg = String(err && err.message || err);
+              setStatus("sync: failed to read store: " + msg);
+              logWarn("sync.webapp.fail", { err: msg, where: "store-read" });
+              console.error("[FeedSorter] failed to read store", msg);
+              console.groupEnd();
+            });
+        } catch (err) {
+          const msg = String(err && err.message || err);
+          setStatus("reload this tab \u2014 extension was updated");
+          logWarn("sync.webapp.fail", { err: msg, threw: true });
+          console.error("[FeedSorter] sync threw before send — refresh this tab.", msg);
+          console.groupEnd();
+        }
+        void sent;
       }
       if (act === "export-logs") { exportLogs().catch((err) => logError("export.logs.fail", err)); }
+      if (act === "export-library") { exportLibrary().catch((err) => logError("export.library.fail", err)); }
       if (act === "collect") startCollect("button");
       if (act === "stop") stopCollect("button");
       if (act === "share") {
@@ -1658,6 +2506,17 @@
         } catch (e) { fail(e); }
       }
       if (act === "help") showCheatSheet();
+      if (act === "settings") showSettingsModal();
+      if (act === "upgrade") {
+        e.preventDefault();
+        e.stopPropagation();
+        const src = t.dataset.src || "unknown";
+        logInfo("tier.upgrade.click", { src });
+        fsSettingsReadStg([FS_SETTINGS_KEYS.appUrl]).then((stg) => {
+          const base = stg[FS_SETTINGS_KEYS.appUrl] || FS_SETTINGS_DEFAULTS.appUrl;
+          window.open(base.replace(/\/+$/, "") + "/billing", "_blank", "noopener");
+        });
+      }
       if (act === "close-help") hideCheatSheet();
       if (act === "download") {
         const id = t.dataset.id;
@@ -1741,7 +2600,10 @@
         }
       }
       if (act === "tx-health") { e.preventDefault(); checkSidecarHealth().catch((err) => logError("transcribe.health.fail", err)); }
+      if (act === "groq-test") { e.preventDefault(); checkGroqHealth().catch((err) => logError("transcribe.groq.health.fail", err)); }
+      if (act === "hf-test") { e.preventDefault(); checkHfHealth().catch((err) => logError("transcribe.hf.health.fail", err)); }
       if (act === "ai-health") { e.preventDefault(); checkAiHealth().catch((err) => logError("ai.health.fail", err)); }
+      if (act === "ai-groq-refresh") { e.preventDefault(); refreshGroqModels({ force: true }).catch((err) => logError("ai.groq.refresh.fail", err)); }
       if (act === "ai-cache-clear") { e.preventDefault(); clearAiCache().catch((err) => logError("ai.cache.clear.fail", err)); }
       if (act === "bulk-run") {
         e.preventDefault();
@@ -1764,6 +2626,15 @@
         state.transcribeBulk.cancel = true;
         state.rewriteBatch.cancel = true;
         setStatus("cancelling batch…");
+      }
+      if (act === "bulk-tx-visible") {
+        e.preventDefault();
+        runBulkTranscribeVisible().catch((err) => logError("bulk.transcribe.fail", err));
+      }
+      if (act === "bulk-tx-visible-cancel") {
+        e.preventDefault();
+        state.bulkTx.cancel = true;
+        setStatus("cancelling bulk transcribe…");
       }
       if (act === "batch-download") { e.preventDefault(); batchDownload(); }
 
@@ -1928,6 +2799,15 @@
         } else if (kind === "hashtag") {
           state.hashtagFilter = null;
           logInfo("filter.change", { key: "hashtagFilter", to: null });
+        } else if (kind === "keyword") {
+          state.keywordFilter = null;
+          logInfo("filter.change", { key: "keywordFilter", to: null });
+        } else if (kind === "niche") {
+          state.nicheFilter = null;
+          logInfo("filter.change", { key: "nicheFilter", to: null });
+        } else if (kind === "format") {
+          state.formatFilter = null;
+          logInfo("filter.change", { key: "formatFilter", to: null });
         } else if (kind === "hasAi") {
           state.hasAi = !state.hasAi;
           logInfo("filter.change", { key: "hasAi", to: state.hasAi });
@@ -2087,8 +2967,28 @@
       const cover = link.dataset.cover || "";
       link.innerHTML = `<img class="fs-thumb" src="${escHTML(cover)}" referrerpolicy="no-referrer" loading="lazy" />`;
     };
+    // Render the preview video inside a CLOSED shadow root so 3rd-party
+    // browser extensions (video downloaders, transcribers) can't see the
+    // <video> element and inject their own hover buttons over our row.
     const swapToVideo = (link, url) => {
-      link.innerHTML = `<video class="fs-thumb fs-thumb-video" src="${escHTML(url)}" autoplay muted loop playsinline preload="metadata"></video>`;
+      link.textContent = "";
+      const host = document.createElement("span");
+      host.dataset.fsVideoHost = "1";
+      host.style.cssText = "display:block;line-height:0;";
+      const root = host.attachShadow({ mode: "closed" });
+      const style = document.createElement("style");
+      style.textContent = ".v{width:56px;height:72px;object-fit:cover;border-radius:4px;background:#0f1018;display:block;pointer-events:none;}";
+      const v = document.createElement("video");
+      v.className = "v";
+      v.src = url;
+      v.autoplay = true; v.muted = true; v.loop = true; v.playsInline = true;
+      v.preload = "metadata";
+      v.setAttribute("controlslist", "nodownload noremoteplayback");
+      v.disablePictureInPicture = true;
+      v.disableRemotePlayback = true;
+      root.appendChild(style);
+      root.appendChild(v);
+      link.appendChild(host);
     };
     els.list.addEventListener("mouseover", (e) => {
       const link = e.target.closest(".fs-thumb-link");
@@ -2109,7 +3009,7 @@
       if (link.contains(e.relatedTarget)) return;
       clearTimeout(hoverTimer);
       if (hoveredLink === link) {
-        if (link.querySelector("video")) restoreImg(link);
+        if (link.querySelector("[data-fs-video-host]")) restoreImg(link);
         hoveredLink = null;
       }
     });
@@ -2202,6 +3102,170 @@
   };
   const hideCheatSheet = () => { if (els.cheat) els.cheat.hidden = true; };
 
+  // -------- Settings modal (gear button next to ?) --------
+  // Three sections: Connection (sign-in + tier), Settings (API URL, Web URL),
+  // Dev (BYOK overrides for Groq / OpenAI / WhisperX URL). Settings are
+  // persisted via SW message handlers `api.set-base` / `api.set-token` and
+  // dev keys are written directly to `chrome.storage.local`.
+  const FS_SETTINGS_KEYS = {
+    apiBase: "fs.api.baseUrl",
+    appUrl: "fs.app.url",
+    groq: "fs.dev.groq_key",
+    openai: "fs.dev.openai_key",
+    whisperx: "fs.dev.whisperx_url",
+  };
+  const FS_SETTINGS_DEFAULTS = {
+    apiBase: "http://localhost:8787",
+    appUrl: "http://localhost:3000",
+  };
+  const fsSettingsSendBg = (cmd, payload) => new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage(Object.assign({ type: "fs-bg", cmd }, payload || {}), (r) => {
+        if (chrome.runtime.lastError) return resolve({ ok: false, err: chrome.runtime.lastError.message });
+        resolve(r || { ok: false });
+      });
+    } catch (err) {
+      resolve({ ok: false, err: String(err && err.message || err) });
+    }
+  });
+  const fsSettingsReadStg = (keys) => new Promise((resolve) => {
+    try { chrome.storage.local.get(keys, resolve); } catch (_) { resolve({}); }
+  });
+  const fsSettingsWriteStg = (obj) => new Promise((resolve) => {
+    try { chrome.storage.local.set(obj, resolve); } catch (_) { resolve(); }
+  });
+  const fsSettingsEscAttr = (s) => String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const showSettingsModal = async () => {
+    const stg = await fsSettingsReadStg([
+      FS_SETTINGS_KEYS.apiBase, FS_SETTINGS_KEYS.appUrl,
+      FS_SETTINGS_KEYS.groq, FS_SETTINGS_KEYS.openai, FS_SETTINGS_KEYS.whisperx,
+    ]);
+    const apiBase = stg[FS_SETTINGS_KEYS.apiBase] || FS_SETTINGS_DEFAULTS.apiBase;
+    const appUrl = stg[FS_SETTINGS_KEYS.appUrl] || FS_SETTINGS_DEFAULTS.appUrl;
+    const groq = stg[FS_SETTINGS_KEYS.groq] || "";
+    const openaiKey = stg[FS_SETTINGS_KEYS.openai] || "";
+    const whisperx = stg[FS_SETTINGS_KEYS.whisperx] || "";
+
+    const m = openModal("Feed Sorter — Settings", `
+      <div class="fs-settings">
+        <div class="fs-settings-section" data-fs-conn>
+          <div class="fs-settings-row">
+            <span class="fs-conn-dot" data-fs-conn-dot data-state="unknown" style="width:10px;height:10px"></span>
+            <div style="flex:1">
+              <div data-fs-conn-status>Checking…</div>
+              <div class="muted" data-fs-conn-email></div>
+            </div>
+            <span class="fs-tier-pill" data-fs-conn-tier hidden>free</span>
+          </div>
+          <div class="fs-settings-row">
+            <button class="fs-icon-btn" data-act="fs-settings-signin">Sign in / Connect</button>
+            <button class="fs-icon-btn" data-act="fs-settings-open-web">Open web app</button>
+          </div>
+        </div>
+
+        <h4>Endpoints</h4>
+        <label>API base URL</label>
+        <input type="url" data-fs-input="apiBase" value="${fsSettingsEscAttr(apiBase)}" placeholder="http://localhost:8787">
+        <div class="fs-help">Where the extension sends sync + transcribe.</div>
+        <label>Web app URL</label>
+        <input type="url" data-fs-input="appUrl" value="${fsSettingsEscAttr(appUrl)}" placeholder="http://localhost:3000">
+        <div class="fs-help">Used by the &ldquo;Sign in / Connect&rdquo; button.</div>
+
+        <h4>Dev keys <span class="muted">(stored in chrome.storage.local)</span></h4>
+        <label>Groq API key (extraction LLM)</label>
+        <input type="password" autocomplete="off" data-fs-input="groq" value="${fsSettingsEscAttr(groq)}" placeholder="gsk_…">
+        <label>OpenAI API key (embeddings)</label>
+        <input type="password" autocomplete="off" data-fs-input="openai" value="${fsSettingsEscAttr(openaiKey)}" placeholder="sk-…">
+        <label>WhisperX URL (local sidecar)</label>
+        <input type="url" data-fs-input="whisperx" value="${fsSettingsEscAttr(whisperx)}" placeholder="http://localhost:8788">
+        <div class="fs-help">Leave blank to use Groq Whisper (server-side).</div>
+
+        <div class="fs-settings-actions">
+          <button class="fs-icon-btn fs-primary" data-act="fs-settings-save">Save</button>
+          <button class="fs-icon-btn" data-act="fs-settings-clear">Clear dev keys</button>
+          <span class="fs-help" data-fs-settings-status></span>
+        </div>
+      </div>
+    `);
+
+    const refreshConn = async () => {
+      const cfg = await fsSettingsSendBg("api.config");
+      const dot = m.querySelector("[data-fs-conn-dot]");
+      const statusEl = m.querySelector("[data-fs-conn-status]");
+      const emailEl = m.querySelector("[data-fs-conn-email]");
+      const tierEl = m.querySelector("[data-fs-conn-tier]");
+      if (!cfg || !cfg.token) {
+        dot && dot.setAttribute("data-state", "off");
+        statusEl.textContent = "Not signed in";
+        emailEl.textContent = "";
+        tierEl.hidden = true;
+        return;
+      }
+      const me = await fsSettingsSendBg("api.request", { path: "/v1/me" });
+      if (me.ok && me.body && me.body.id) {
+        dot && dot.setAttribute("data-state", "on");
+        statusEl.textContent = "Connected";
+        emailEl.textContent = me.body.email || "";
+        tierEl.textContent = me.body.tier || "free";
+        tierEl.hidden = false;
+        tierEl.classList.toggle("fs-tier-pro", me.body.tier === "pro" || me.body.tier === "studio");
+      } else {
+        dot && dot.setAttribute("data-state", "off");
+        statusEl.textContent = me.status === 401 ? "Session expired" : "Reachable, not signed in";
+        emailEl.textContent = me.err || "";
+        tierEl.hidden = true;
+      }
+    };
+    refreshConn();
+
+    m.addEventListener("click", async (ev) => {
+      const t = ev.target.closest("[data-act]");
+      if (!t) return;
+      const act = t.dataset.act;
+      if (act === "modal-close") { closeModal(); return; }
+      const status = m.querySelector("[data-fs-settings-status]");
+      const v = (k) => m.querySelector(`[data-fs-input="${k}"]`).value.trim();
+      if (act === "fs-settings-save") {
+        const apiVal = v("apiBase") || FS_SETTINGS_DEFAULTS.apiBase;
+        const appVal = v("appUrl") || FS_SETTINGS_DEFAULTS.appUrl;
+        await fsSettingsWriteStg({
+          [FS_SETTINGS_KEYS.apiBase]: apiVal,
+          [FS_SETTINGS_KEYS.appUrl]: appVal,
+          [FS_SETTINGS_KEYS.groq]: v("groq"),
+          [FS_SETTINGS_KEYS.openai]: v("openai"),
+          [FS_SETTINGS_KEYS.whisperx]: v("whisperx"),
+        });
+        await fsSettingsSendBg("api.set-base", { baseUrl: apiVal });
+        status.textContent = "✓ saved";
+        setTimeout(() => (status.textContent = ""), 2000);
+        refreshConn();
+      } else if (act === "fs-settings-clear") {
+        if (!confirm("Clear stored Groq / OpenAI / WhisperX values?")) return;
+        await fsSettingsWriteStg({
+          [FS_SETTINGS_KEYS.groq]: "",
+          [FS_SETTINGS_KEYS.openai]: "",
+          [FS_SETTINGS_KEYS.whisperx]: "",
+        });
+        for (const k of ["groq", "openai", "whisperx"]) {
+          const el = m.querySelector(`[data-fs-input="${k}"]`);
+          if (el) el.value = "";
+        }
+        status.textContent = "✓ cleared";
+        setTimeout(() => (status.textContent = ""), 2000);
+      } else if (act === "fs-settings-signin") {
+        const stored = await fsSettingsReadStg([FS_SETTINGS_KEYS.appUrl]);
+        const target = (stored[FS_SETTINGS_KEYS.appUrl] || FS_SETTINGS_DEFAULTS.appUrl) + "/connect";
+        window.open(target, "_blank", "noopener");
+      } else if (act === "fs-settings-open-web") {
+        const stored = await fsSettingsReadStg([FS_SETTINGS_KEYS.appUrl]);
+        const target = stored[FS_SETTINGS_KEYS.appUrl] || FS_SETTINGS_DEFAULTS.appUrl;
+        window.open(target, "_blank", "noopener");
+      }
+    });
+  };
+
   // -------- Compare modal --------
   // Renders inside `.fs-root` so IG SPA navs that wipe document.body's other
   // children don't take it down. Esc / backdrop click / × button all close.
@@ -2269,7 +3333,8 @@
     const enriched = computeOutliers(sel.map((p) => {
       const d = computeDerived(p);
       const cpr = (p.comments || 0) / Math.max(p.likes || 0, 1) * 1000;
-      return { ...p, ...d, velocity: d.velocityViewsPerHr, cpr };
+      const vph = vphSincePosted(p);
+      return { ...p, ...d, velocity: d.velocityViewsPerHr, cpr, vph };
     }), state.metric);
 
     // Same-author diff highlights: compare each post against the *max*
@@ -2471,16 +3536,12 @@
       list = list.filter((p) => sessionIds.has(p.id));
     }
     if (state.surface !== "all") {
-      list = list.filter((p) => p.surface === state.surface);
+      list = list.filter((p) => matchesSurface(p, state.surface));
     }
     if (state.audioId) {
       list = list.filter((p) => p.audio && p.audio.id === state.audioId);
     }
-    const days = RANGES[state.range];
-    if (days) {
-      const cutoff = Date.now() / 1000 - days * 86400;
-      list = list.filter((p) => p.createTime >= cutoff);
-    }
+    list = applyRangeFilter(list);
     const q = (state.q || "").trim().toLowerCase();
     if (q) {
       list = list.filter((p) => {
@@ -2508,6 +3569,19 @@
       const re = new RegExp("#" + state.hashtagFilter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?![\\w_])", "i");
       list = list.filter((p) => re.test(p.desc || ""));
     }
+    if (state.keywordFilter) {
+      // Whole-word, case-insensitive caption match. Used by the Stats
+      // keyword chips as a lightweight "filter by niche term".
+      const esc = state.keywordFilter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const re = new RegExp("(?:^|[^\\w])" + esc + "(?![\\w])", "i");
+      list = list.filter((p) => re.test(p.desc || ""));
+    }
+    if (state.nicheFilter) {
+      list = list.filter((p) => p && p.niche === state.nicheFilter);
+    }
+    if (state.formatFilter) {
+      list = list.filter((p) => p && p.format === state.formatFilter);
+    }
     if (state.hasAi) list = list.filter((p) => !!(p.ai && p.ai.hook));
     if (state.hookTypeFilter) list = list.filter((p) => p.ai && p.ai.hookType === state.hookTypeFilter);
     if (state.topicFilter) list = list.filter((p) => p.ai && p.ai.topic === state.topicFilter);
@@ -2519,10 +3593,42 @@
       // Expose `velocity` as an alias so computeOutliers(list, "velocity")
       // reads it directly without special-casing the metric key.
       const cpr = (p.comments || 0) / Math.max(p.likes || 0, 1) * 1000;
-      return { ...p, ...d, velocity: d.velocityViewsPerHr, cpr };
+      const vph = vphSincePosted(p);
+      return { ...p, ...d, velocity: d.velocityViewsPerHr, cpr, vph };
     });
-    list = computeOutliers(list, state.metric);
+    // On Explore the outlier score is not meaningful (no per-author
+    // baseline available). Stamp _score=0 / _scoreBasis="none" instead
+    // of mixing every creator's metric into one global median.
+    if (pageScope.kind === "explore") {
+      list = list.map((p) => ({ ...p, _score: 0, _scoreBasis: "none" }));
+    } else {
+      list = computeOutliers(list, state.metric);
+    }
     const key = state.sort;
+    // ---- Relevance sort helpers ----
+    // Built-in sort key "relevance" combines formatScores (computed lazily
+    // via __fsRelevance.scoreRelevanceFromPost), outlier (_score), velocity,
+    // and optional niche match. Learning mode + format weights are kept in
+    // state.relevancePrefs (settable from settings UI / onboarding later);
+    // fall back to LEARNING_MODES.hybrid() when nothing is configured.
+    const _getRelevancePrefs = () => {
+      const lib = (typeof globalThis !== "undefined" && globalThis.__fsRelevance) || null;
+      if (!lib) return {};
+      if (state.relevancePrefs && typeof state.relevancePrefs === "object") {
+        return state.relevancePrefs;
+      }
+      return lib.LEARNING_MODES.hybrid();
+    };
+    const _relevanceScoreOf = (p, prefs) => {
+      const lib = (typeof globalThis !== "undefined" && globalThis.__fsRelevance) || null;
+      if (!lib) return 0;
+      // Memo on the post object so a single sort doesn't re-derive scores.
+      if (p.__fsRelevance != null) return p.__fsRelevance;
+      const r = lib.scoreRelevanceFromPost(p, prefs);
+      p.__fsRelevance = r.score;
+      p.__fsRelevanceReason = r.reason;
+      return r.score;
+    };
     const gKey = state.groupBy && state.groupBy !== "none" ? state.groupBy : null;
     const groupVal = (p) => {
       if (!gKey) return "";
@@ -2544,9 +3650,18 @@
         const ga = groupVal(a), gb = groupVal(b);
         if (ga !== gb) return ga < gb ? -1 : 1;
       }
+      if (key === "relevance") {
+        // Pull learning-mode prefs from chrome.storage (set in settings, default
+        // hybrid). Computed once per sort via the lazy getter below.
+        const prefs = _getRelevancePrefs();
+        const ar = _relevanceScoreOf(a, prefs);
+        const br = _relevanceScoreOf(b, prefs);
+        return br - ar;
+      }
       if (key === "outlier") return b._score - a._score;
       if (key === "recent") return b.createTime - a.createTime;
       if (key === "velocity") return (b.velocityViewsPerHr || 0) - (a.velocityViewsPerHr || 0);
+      if (key === "vph") return (b.vph || 0) - (a.vph || 0);
       if (key === "cpr") return (b.cpr || 0) - (a.cpr || 0);
       if (key === "status") {
         const sa = STATUS_RANK[statusOf(a.id)] || 99;
@@ -2563,6 +3678,25 @@
       return (b[key] || 0) - (a[key] || 0);
     });
     if (state.limit > 0) list = list.slice(0, state.limit);
+    // Surface a deduped debug log proving the sort actually ran. The
+    // dropdown change emits filter.change; this confirms the order.
+    // Signature includes key+metric+count+top-3 ids so a re-render with
+    // identical output stays silent.
+    const sig = `${key}|${state.metric}|${list.length}|${(list[0]||{}).id||""}|${(list[1]||{}).id||""}|${(list[2]||{}).id||""}`;
+    if (sig !== filtered._lastSig) {
+      filtered._lastSig = sig;
+      const top = list.slice(0, 3).map((p) => ({
+        id: p.id,
+        likes: p.likes || 0,
+        views: p.views || 0,
+        comments: p.comments || 0,
+        velocity: Math.round(p.velocityViewsPerHr || 0),
+        cpr: Number((p.cpr || 0).toFixed(2)),
+        outlier: Number((p._score || 0).toFixed(2)),
+        recent: p.createTime || 0,
+      }));
+      logDebug("sort.applied", { key, metric: state.metric, count: list.length, top });
+    }
     return list;
   };
 
@@ -2571,6 +3705,56 @@
 
   const setStatus = (s) => {
     if (els.status) els.status.textContent = s;
+  };
+
+  // Transient toast pinned to the overlay root. Auto-dismisses after `ms`.
+  let _toastTimer = null;
+  const showToast = (msg, ms = 1000) => {
+    if (!els.root) return;
+    let el = els.root.querySelector("[data-toast]");
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "fs-toast";
+      el.dataset.toast = "";
+      els.root.appendChild(el);
+    }
+    el.textContent = String(msg);
+    el.classList.add("fs-toast-on");
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => { el.classList.remove("fs-toast-on"); }, ms);
+  };
+
+  // Update the header pin-creator button: visible only on profile pages
+  // (and not the Niche tab), with icon + title reflecting tracked state.
+  const updatePinBtn = () => {
+    if (!els.pinBtn) return;
+    const profile = pageScope.kind === "profile" && !!pageScope.username;
+    const onNiche = state.view === "niche";
+    const show = profile && !onNiche;
+    els.pinBtn.hidden = !show;
+    if (!show) return;
+    const pinned = !!creators.find((c) => c.username === pageScope.username);
+    els.pinBtn.textContent = pinned ? "\uD83D\uDCCD" : "\uD83D\uDCCC";
+    els.pinBtn.title = pinned
+      ? "Already in watchlist \u2014 click to unpin"
+      : "Pin creator to watchlist";
+    els.pinBtn.classList.toggle("fs-pin-on", pinned);
+    els.pinBtn.dataset.username = pageScope.username;
+  };
+
+  const togglePinCurrentCreator = async () => {
+    if (pageScope.kind !== "profile" || !pageScope.username) return;
+    const username = pageScope.username;
+    const pinned = !!creators.find((c) => c.username === username);
+    if (pinned) {
+      await removeCreator(username);
+      logInfo("watchlist.toggle", { username, pinned: false, platform: PLATFORM.platform });
+      showToast(`Removed @${username} from watchlist`);
+    } else {
+      await upsertCreator(username);
+      logInfo("watchlist.toggle", { username, pinned: true, platform: PLATFORM.platform });
+      showToast(`Pinned @${username} to watchlist`);
+    }
   };
 
   const renderLog = () => {
@@ -2628,6 +3812,64 @@
     logInfo("export.logs", { entries: out.length, persisted: persisted?.length || 0, buffered: LOG_BUF.length });
   };
   window.__feedSorter.exportLogs = exportLogs;
+
+  // Dump the entire library (posts + meta) as a single JSON file. Feeds
+  // scripts/classify-test.mjs and any offline analysis. Transcripts and AI
+  // fields live on the post row itself (see src/store.js:setPostTranscript /
+  // setPostAi), so a flat getAll() already includes them — we only need to
+  // merge in the separate `meta` store.
+  const exportLibrary = async () => {
+    const store = window.__fsStore;
+    if (!store || typeof store.getAll !== "function") {
+      setStatus("library export: store not ready");
+      logWarn("export.library.skip", { reason: "no-store" });
+      return;
+    }
+    const posts = await store.getAll();
+    let metaRows = [];
+    try { metaRows = (typeof store.getAllMeta === "function") ? (await store.getAllMeta()) || [] : []; } catch (e) { logWarn("export.library.meta.fail", e); }
+    const metaById = new Map();
+    for (const m of metaRows) {
+      if (m && m.id) metaById.set(String(m.id), m);
+    }
+    const merged = posts.map((p) => {
+      const m = metaById.get(String(p && p.id));
+      return m ? { ...p, meta: m } : p;
+    });
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      version: 1,
+      platform: PLATFORM && PLATFORM.id || null,
+      count: merged.length,
+      posts: merged,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
+    a.download = `feed-sorter-library-${stamp}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+    logInfo("library.export", { posts: merged.length, meta: metaRows.length });
+    setStatus(`library exported (${merged.length} posts)`);
+  };
+  window.__feedSorter.exportLibrary = exportLibrary;
+
+  // Refresh the Export-library button label with the live post count whenever
+  // the settings panel is opened. Cheap — just a count(getAll()).
+  const refreshLibraryExportCount = async () => {
+    try {
+      const btn = root && root.querySelector('[data-export-library]');
+      if (!btn || !window.__fsStore || typeof window.__fsStore.getAll !== "function") return;
+      const rows = await window.__fsStore.getAll();
+      btn.textContent = `Export library (${rows.length})`;
+    } catch (_) { /* non-fatal */ }
+  };
+  window.__feedSorter.refreshLibraryExportCount = refreshLibraryExportCount;
+  // Best-effort initial paint shortly after mount.
+  setTimeout(() => { refreshLibraryExportCount().catch(() => {}); }, 750);
 
   // -------- batch ops --------
   const renderBatchBar = () => {
@@ -2922,6 +4164,21 @@
     return `${m}:${r}`;
   };
 
+  const TRANSCRIPT_SOURCE_LABELS = {
+    "tiktok-vtt":   "TikTok auto-captions (ASR)",
+    "ig-alt":       "Instagram alt text — describes cover, not audio",
+    "groq-whisper": "Groq Whisper-Large-v3-Turbo (cloud, your key)",
+    "hf-whisper":   "HuggingFace Whisper-Large-v3 (cloud, your key)",
+    "whisper":      "Local Whisper",
+  };
+  const transcriptSourceClass = (src) => {
+    if (src === "tiktok-vtt") return "fs-tx-source-vtt";
+    if (src === "ig-alt") return "fs-tx-source-alt";
+    if (src === "groq-whisper") return "fs-tx-source-groq";
+    if (src === "hf-whisper") return "fs-tx-source-hf";
+    return "fs-tx-source-whisper";
+  };
+
   const renderTranscriptBlock = (p) => {
     const inflight = state.transcribeInflight.has(p.id);
     if (!p.transcript && !inflight) return "";
@@ -2931,12 +4188,16 @@
       </div>`;
     }
     const segs = Array.isArray(p.transcriptSegments) ? p.transcriptSegments : [];
+    const src = p.transcriptSource || "whisper";
+    const srcLabel = TRANSCRIPT_SOURCE_LABELS[src] || src;
+    const srcCls = transcriptSourceClass(src);
     const head = `<div class="fs-transcript-head">
         <span>🎙️ Transcript</span>
         ${p.transcriptLang ? `<span class="fs-transcript-lang">${escHTML(p.transcriptLang)}</span>` : ""}
         <span class="fs-transcript-meta">${(p.transcript || "").length} chars · ${segs.length} segs</span>
         <button class="fs-icon-btn fs-transcript-copy" data-act="transcript-copy" data-id="${escHTML(p.id)}" title="Copy transcript text">Copy</button>
-      </div>`;
+      </div>
+      <div class="fs-transcript-source ${srcCls}">Source: ${escHTML(srcLabel)}</div>`;
     if (segs.length) {
       const rows = segs.map((s) => `<div class="fs-transcript-row"><span class="fs-transcript-ts">[${fmtTs(s.start)} → ${fmtTs(s.end)}]</span> <span class="fs-transcript-tx">${escHTML(s.text || "")}</span></div>`).join("");
       return `<div class="fs-transcript">${head}<div class="fs-transcript-body">${rows}</div></div>`;
@@ -3002,9 +4263,12 @@
 
   const transcribeOne = async (p, { quiet = false } = {}) => {
     if (!p || !p.id) return { ok: false, err: "no-post" };
-    if (!p.videoUrl) return { ok: false, err: "no-video-url" };
+    const hasFree = !!(p && (p.captionUrl || p.altText));
+    if (!p.videoUrl && !hasFree) return { ok: false, err: "no-video-url" };
     const base = sidecarBase();
-    if (!base) return { ok: false, err: "no-sidecar-url" };
+    const hasGroq = !!(state.transcriptCloud && state.transcriptCloud.groqApiKey);
+    const hasHf = !!(state.transcriptCloud && state.transcriptCloud.hfApiKey);
+    if (!base && !hasFree && !hasGroq && !hasHf) return { ok: false, err: "no-sidecar-url" };
     if (state.transcribeInflight.has(p.id)) return { ok: false, err: "already-running" };
     state.transcribeInflight.add(p.id);
     if (!quiet) setStatus(`transcribing ${p.shortcode || p.id}…`);
@@ -3014,13 +4278,31 @@
       const r = await sendBg("transcribe", {
         sidecarUrl: base,
         videoUrl: p.videoUrl,
+        groqApiKey: String((state.transcriptCloud && state.transcriptCloud.groqApiKey) || ""),
+        hfApiKey: String((state.transcriptCloud && state.transcriptCloud.hfApiKey) || ""),
+        hfFallbackOnRateLimit: !!(state.transcriptCloud && state.transcriptCloud.hfFallbackOnRateLimit),
+        transcribeMode: String(state.transcribeMode || "auto"),
         id: p.id,
         shortcode: p.shortcode,
+        post: {
+          id: p.id,
+          platform: p.platform,
+          captionUrl: p.captionUrl || null,
+          captionFormat: p.captionFormat || null,
+          altText: p.altText || null,
+          videoUrl: p.videoUrl || null,
+        },
       });
       if (!r.ok || !r.body || !r.body.ok) {
-        if (!quiet) setStatus(`transcribe failed: ${r.err || "see log"}`);
-        logWarn("transcribe.fail", { id: p.id, err: r.err, status: r.status });
-        return { ok: false, err: r.err };
+        // Friendlier message for the BYOK rate-limit case — a retry usually works.
+        const friendly = r.err === "groq-rate-limit"
+          ? `Groq rate-limit hit— retry${r.retryAfter ? ` in ${r.retryAfter}s` : " in a moment"}`
+          : r.err === "video too large"
+            ? "video > 25 MB — Groq free tier limit; use the local sidecar"
+            : `transcribe failed: ${r.err || "see log"}`;
+        if (!quiet) setStatus(friendly);
+        logWarn("transcribe.fail", { id: p.id, err: r.err, status: r.status, retryAfter: r.retryAfter });
+        return { ok: false, err: r.err, retryAfter: r.retryAfter };
       }
       const merged = await persistTranscript(p.id, r.body);
       if (!quiet) setStatus(`transcribed: ${(r.body.text || "").length} chars in ${r.ms}ms`);
@@ -3087,21 +4369,236 @@
     logInfo("transcribe.bulk.end", { ok, fail: state.transcribeBulk.fail, cancelled: state.transcribeBulk.cancel, total: eligible.length });
   };
 
+  // ---- Visible-feed bulk transcribe (footer button) ----
+  // Walks every row currently in `filtered()` view that has media but no
+  // transcript, runs the full cascade per post (background.js handles tier
+  // selection), and paces calls to <30 RPM via a token bucket so the Groq
+  // free-tier rate limit can't be tripped.
+
+  // True if a row has a non-empty transcript already.
+  const _hasTx = (p) => !!(p && p.transcript && String(p.transcript).trim());
+  // True if a row has any transcribable media.
+  const _hasMedia = (p) => !!(p && (p.captionUrl || p.videoUrl));
+
+  const visibleEligibleForBulkTx = () => {
+    return filtered().filter((p) => !_hasTx(p) && _hasMedia(p));
+  };
+
+  const updateBulkTxButton = () => {
+    const btn = els.root && els.root.querySelector("[data-bulk-tx-btn]");
+    if (!btn) return;
+    // Free tier: hot-swap the bulk-transcribe footer button for an upgrade
+    // chip. The root click handler routes data-act="upgrade" to /billing.
+    if (!proAccess()) {
+      btn.textContent = "🔒 Pro — Bulk transcribe";
+      btn.title = "Bulk transcription is a Pro feature — click to upgrade";
+      btn.dataset.act = "upgrade";
+      btn.dataset.src = "bulk-transcribe";
+      btn.disabled = false;
+      btn.classList.add("fs-upgrade-chip");
+      return;
+    }
+    btn.classList.remove("fs-upgrade-chip");
+    btn.dataset.act = "bulk-tx-visible";
+    delete btn.dataset.src;
+    btn.title = "Transcribe every visible post that doesn't already have a transcript";
+    if (state.bulkTx.running) {
+      btn.textContent = "📝 Transcribing…";
+      btn.disabled = true;
+      return;
+    }
+    const n = visibleEligibleForBulkTx().length;
+    btn.textContent = `📝 Bulk transcribe (${n})`;
+    btn.disabled = n === 0;
+  };
+
+  const renderBulkTxStatus = () => {
+    const wrap = els.root && els.root.querySelector("[data-bulk-tx-status]");
+    const counts = els.root && els.root.querySelector("[data-bulk-tx-counts]");
+    const tier = els.root && els.root.querySelector("[data-bulk-tx-tier]");
+    const cancel = els.root && els.root.querySelector("[data-bulk-tx-cancel]");
+    if (!wrap) return;
+    const s = state.bulkTx;
+    if (!s.running && !s.last) { wrap.hidden = true; if (cancel) cancel.hidden = true; return; }
+    wrap.hidden = false;
+    if (counts) counts.textContent = `${s.done}/${s.total} done · ${s.skipped} skipped · ${s.failed} failed`;
+    if (tier && s.last) {
+      const last = s.last;
+      if (last.ok) tier.textContent = `tier: ${last.source} · ${(last.ms / 1000).toFixed(1)}s · ✓`;
+      else if (last.skipped) tier.textContent = `skipped (${last.reason || "—"})`;
+      else tier.textContent = `failed: ${last.err || "—"}`;
+    } else if (tier) {
+      tier.textContent = "";
+    }
+    if (cancel) cancel.hidden = !s.running;
+  };
+
+  const runBulkTranscribeVisible = async () => {
+    if (state.bulkTx.running) { setStatus("bulk transcribe already running"); return; }
+    const lib = (typeof globalThis !== "undefined" && globalThis.__fsBulkTranscribe) || null;
+    if (!lib || !lib.runBulkTranscribe) {
+      setStatus("bulk transcribe module missing");
+      logWarn("bulk.transcribe.missing");
+      return;
+    }
+    const eligible = visibleEligibleForBulkTx();
+    if (!eligible.length) { setStatus("no posts to transcribe"); return; }
+
+    state.bulkTx = { running: true, cancel: false, done: 0, skipped: 0, failed: 0, total: eligible.length, last: null };
+    updateBulkTxButton();
+    renderBulkTxStatus();
+    logInfo("bulk.transcribe.start", { total: eligible.length });
+
+    // Bridge transcribeOne (whose error shape encodes 429 as `groq-rate-limit`)
+    // to the canonical { ok, status, retryAfter, source } the bulk runner expects.
+    const adapter = async (p) => {
+      const r = await transcribeOne(p, { quiet: true });
+      if (r && r.ok) {
+        const src = (r.body && (r.body.source || r.body.engine)) || "unknown";
+        return { ok: true, source: src, text: (r.body && r.body.text) || "" };
+      }
+      if (r && r.err === "groq-rate-limit") {
+        return { ok: false, status: 429, retryAfter: Number(r.retryAfter) || 1 };
+      }
+      return { ok: false, err: (r && r.err) || "unknown" };
+    };
+
+    let summary;
+    try {
+      summary = await lib.runBulkTranscribe({
+        posts: eligible,
+        transcribe: adapter,
+        concurrency: 2,
+        log: (level, event, data) => {
+          if (level === "warn") logWarn(event, data);
+          else logInfo(event, data);
+        },
+        shouldCancel: () => state.bulkTx.cancel,
+        onProgress: (snap) => {
+          state.bulkTx.done = snap.done;
+          state.bulkTx.skipped = snap.skipped;
+          state.bulkTx.failed = snap.failed;
+          state.bulkTx.last = snap.last;
+          renderBulkTxStatus();
+        },
+        // Slight jitter (±250ms around 500) to avoid thundering-herd on retry.
+        jitter: () => 500 + Math.floor(Math.random() * 250),
+      });
+    } catch (e) {
+      logError("bulk.transcribe.fail", e);
+      summary = { done: state.bulkTx.done, skipped: state.bulkTx.skipped, failed: state.bulkTx.failed, durationMs: 0, tierBreakdown: {} };
+    }
+
+    state.bulkTx.running = false;
+    updateBulkTxButton();
+    renderBulkTxStatus();
+    // Re-render so new transcripts feed Stats keyword extraction.
+    render();
+
+    const tb = summary.tierBreakdown || {};
+    const free = (tb["tiktok-vtt"] || 0) + (tb["ig-alt"] || 0);
+    const groq = tb["groq-whisper"] || 0;
+    const hf = tb["hf-whisper"] || 0;
+    const sidecar = tb["whisper"] || 0;
+    const parts = [];
+    if (free) parts.push(`${free} free`);
+    if (groq) parts.push(`${groq} Groq`);
+    if (hf) parts.push(`${hf} HF`);
+    if (sidecar) parts.push(`${sidecar} sidecar`);
+    const tail = parts.length ? ` (${parts.join(", ")})` : "";
+    const skipTail = summary.skipped ? ` · ${summary.skipped} skipped` : "";
+    showToast(`Transcribed ${summary.done} posts${tail}${skipTail}`, 4000);
+  };
+
   const TRANSCRIBE_KEY = "fs.transcribe";
+  const VALID_TRANSCRIBE_MODES = new Set(["auto", "free-only", "cloud-only", "sidecar-only"]);
   const loadTranscribeConfig = async () => {
     try {
       const r = await chrome.storage.local.get(TRANSCRIBE_KEY);
       const cfg = r && r[TRANSCRIBE_KEY];
-      if (cfg && typeof cfg === "object" && cfg.url) {
-        state.transcribeUrl = String(cfg.url);
+      if (cfg && typeof cfg === "object") {
+        if (cfg.url) state.transcribeUrl = String(cfg.url);
+        if (typeof cfg.mode === "string" && VALID_TRANSCRIBE_MODES.has(cfg.mode)) {
+          state.transcribeMode = cfg.mode;
+        }
       }
     } catch (e) { logWarn("transcribe.load.fail", e); }
   };
   const saveTranscribeConfig = async () => {
     try {
-      await chrome.storage.local.set({ [TRANSCRIBE_KEY]: { url: state.transcribeUrl } });
-      logInfo("transcribe.config.save", { url: state.transcribeUrl });
+      await chrome.storage.local.set({ [TRANSCRIBE_KEY]: { url: state.transcribeUrl, mode: state.transcribeMode } });
+      logInfo("transcribe.config.save", { url: state.transcribeUrl, mode: state.transcribeMode });
     } catch (e) { logWarn("transcribe.save.fail", e); }
+  };
+
+  // -------- Cloud BYOK transcription (Groq) settings + health --------
+  const TRANSCRIBE_CLOUD_KEY = "fs:transcribeCloud";
+  const loadTranscriptCloudConfig = async () => {
+    try {
+      const r = await chrome.storage.local.get(TRANSCRIBE_CLOUD_KEY);
+      const cfg = r && r[TRANSCRIBE_CLOUD_KEY];
+      if (cfg && typeof cfg === "object") {
+        state.transcriptCloud = {
+          groqApiKey: typeof cfg.groqApiKey === "string" ? cfg.groqApiKey : "",
+          hfApiKey: typeof cfg.hfApiKey === "string" ? cfg.hfApiKey : "",
+          hfFallbackOnRateLimit: !!cfg.hfFallbackOnRateLimit,
+        };
+      }
+    } catch (e) { logWarn("transcribe.cloud.load.fail", e); }
+  };
+  const saveTranscriptCloudConfig = async () => {
+    try {
+      await chrome.storage.local.set({ [TRANSCRIBE_CLOUD_KEY]: { ...state.transcriptCloud } });
+      // Don't log the key itself — just whether one is set.
+      logInfo("transcribe.cloud.config.save", {
+        groqKeySet: !!state.transcriptCloud.groqApiKey,
+        hfKeySet: !!state.transcriptCloud.hfApiKey,
+        hfFallback: !!state.transcriptCloud.hfFallbackOnRateLimit,
+      });
+    } catch (e) { logWarn("transcribe.cloud.save.fail", e); }
+  };
+  const setGroqHealth = (ok, msg) => {
+    state.groqHealth = { ok, msg: msg || "", checkedAt: Date.now() };
+    if (els.groqHealth) {
+      els.groqHealth.textContent = msg || (ok ? "ok" : "unreachable");
+      els.groqHealth.dataset.level = ok ? "ok" : (ok === false ? "err" : "unknown");
+    }
+  };
+  const setHfHealth = (ok, msg) => {
+    state.hfHealth = { ok, msg: msg || "", checkedAt: Date.now() };
+    if (els.hfHealth) {
+      els.hfHealth.textContent = msg || (ok ? "ok" : "unreachable");
+      els.hfHealth.dataset.level = ok ? "ok" : (ok === false ? "err" : "unknown");
+    }
+  };
+  const checkHfHealth = async () => {
+    const key = String(state.transcriptCloud.hfApiKey || "").trim();
+    if (!key) { setHfHealth(false, "no key set"); return { ok: false }; }
+    setHfHealth(null, "checking…");
+    const r = await sendBg("hf-test", { apiKey: key });
+    if (r && r.ok) {
+      setHfHealth(true, `✔ token valid · ${r.ms || 0}ms`);
+      logInfo("transcribe.hf.health.ok", { ms: r.ms });
+    } else {
+      setHfHealth(false, `✗ ${(r && (r.err || (r.status ? `HTTP ${r.status}` : "unreachable"))) || "unreachable"}`);
+      logWarn("transcribe.hf.health.fail", { err: r && r.err, status: r && r.status });
+    }
+    return r;
+  };
+
+  const checkGroqHealth = async () => {
+    const key = String(state.transcriptCloud.groqApiKey || "").trim();
+    if (!key) { setGroqHealth(false, "no key set"); return { ok: false }; }
+    setGroqHealth(null, "checking…");
+    const r = await sendBg("groq-test", { apiKey: key });
+    if (r && r.ok) {
+      setGroqHealth(true, `✔ key valid · ${r.ms || 0}ms`);
+      logInfo("transcribe.groq.health.ok", { ms: r.ms });
+    } else {
+      setGroqHealth(false, `✗ ${(r && (r.err || (r.status ? `HTTP ${r.status}` : "unreachable"))) || "unreachable"}`);
+      logWarn("transcribe.groq.health.fail", { err: r && r.err, status: r && r.status });
+    }
+    return r;
   };
 
   // -------- Local LLM (Ollama) settings + health --------
@@ -3111,20 +4608,136 @@
       const r = await chrome.storage.local.get(AI_KEY);
       const cfg = r && r[AI_KEY];
       if (cfg && typeof cfg === "object") {
+        // Migration: existing installs without `provider` had only Ollama
+        // configured — keep them on Ollama. New installs (no AI_KEY at all)
+        // hit this branch never, and will land on the in-memory default of
+        // "ollama" until they paste a Groq key (which auto-flips the toggle).
+        const prov = cfg.provider === "groq" ? "groq" : "ollama";
         state.ai = {
+          provider: prov,
+          _providerExplicit: !!cfg.provider, // any saved provider == explicit
           endpoint: String(cfg.endpoint || state.ai.endpoint),
           model: String(cfg.model || state.ai.model),
           visionModel: String(cfg.visionModel || cfg.model || state.ai.visionModel),
           concurrency: Math.max(1, Math.min(16, Number(cfg.concurrency) || state.ai.concurrency)),
+          groq: {
+            model: String((cfg.groq && cfg.groq.model) || state.ai.groq.model),
+            fastModel: String((cfg.groq && cfg.groq.fastModel) || state.ai.groq.fastModel),
+            modelsCache: (cfg.groq && cfg.groq.modelsCache && typeof cfg.groq.modelsCache === "object")
+              ? { fetchedAt: Number(cfg.groq.modelsCache.fetchedAt) || 0, models: Array.isArray(cfg.groq.modelsCache.models) ? cfg.groq.modelsCache.models : [] }
+              : { fetchedAt: 0, models: [] },
+          },
         };
       }
     } catch (e) { logWarn("ai.load.fail", e); }
   };
   const saveAiConfig = async () => {
     try {
-      await chrome.storage.local.set({ [AI_KEY]: { ...state.ai } });
-      logInfo("ai.config.save", { endpoint: state.ai.endpoint, model: state.ai.model, vision: state.ai.visionModel, conc: state.ai.concurrency });
+      // Strip the in-memory `_providerExplicit` flag from the persisted blob.
+      const { _providerExplicit, ...persist } = state.ai;
+      await chrome.storage.local.set({ [AI_KEY]: persist });
+      logInfo("ai.config.save", {
+        provider: state.ai.provider,
+        endpoint: state.ai.endpoint, model: state.ai.model,
+        groqModel: state.ai.groq.model, groqFast: state.ai.groq.fastModel,
+        conc: state.ai.concurrency,
+      });
     } catch (e) { logWarn("ai.save.fail", e); }
+  };
+
+  // Toggle visibility of the Groq vs Ollama settings sub-blocks based on the
+  // active provider. Called whenever the user flips the provider selector or
+  // pastes a key that auto-promotes Groq.
+  const applyProviderUi = () => {
+    const prov = state.ai.provider || "ollama";
+    if (els.aiProvider) els.aiProvider.value = prov;
+    if (els.aiGroqBlock) els.aiGroqBlock.style.display = prov === "groq" ? "" : "none";
+    // The Ollama block is a <details>; auto-collapse when Groq is active.
+    if (els.aiOllamaBlock) {
+      els.aiOllamaBlock.style.display = "";
+      try { els.aiOllamaBlock.open = (prov === "ollama"); } catch { /* ignore */ }
+    }
+  };
+
+  // Populate the Groq model dropdowns. We always include the user's current
+  // selection (even if not in the list) so a manually-saved value survives a
+  // model-list refresh that doesn't return it.
+  const populateGroqDropdowns = (models) => {
+    const all = Array.isArray(models) ? models.slice() : [];
+    const ensure = (v) => { if (v && !all.includes(v)) all.push(v); };
+    ensure(state.ai.groq.model);
+    ensure(state.ai.groq.fastModel);
+    ensure("llama-3.3-70b-versatile");
+    ensure("llama-3.1-8b-instant");
+    const fill = (el, current) => {
+      if (!el) return;
+      el.innerHTML = "";
+      // Filter out non-chat models (whisper, embeddings) when we can detect.
+      const chatModels = all.filter((m) => !/whisper|embed|guard/i.test(m));
+      const list = chatModels.length ? chatModels : all;
+      for (const m of list) {
+        const opt = document.createElement("option");
+        opt.value = m;
+        opt.textContent = m;
+        if (m === current) opt.selected = true;
+        el.appendChild(opt);
+      }
+      if (current && !list.includes(current)) {
+        const opt = document.createElement("option");
+        opt.value = current; opt.textContent = current; opt.selected = true;
+        el.appendChild(opt);
+      }
+    };
+    fill(els.aiGroqModel, state.ai.groq.model);
+    fill(els.aiGroqFastModel, state.ai.groq.fastModel);
+  };
+
+  // Fetch Groq's /openai/v1/models with a 1h cache. No-op (returns the cache)
+  // when the cache is fresh or no key is set.
+  const GROQ_MODELS_CACHE_MS = 60 * 60 * 1000;
+  let groqModelsInflight = null;
+  const refreshGroqModels = async ({ force = false } = {}) => {
+    const key = String((state.transcriptCloud && state.transcriptCloud.groqApiKey) || "").trim();
+    if (!key) {
+      populateGroqDropdowns([]);
+      return { ok: false, err: "no-key" };
+    }
+    const cache = state.ai.groq.modelsCache || { fetchedAt: 0, models: [] };
+    const fresh = !force && (Date.now() - cache.fetchedAt) < GROQ_MODELS_CACHE_MS && cache.models.length;
+    if (fresh) {
+      populateGroqDropdowns(cache.models);
+      return { ok: true, models: cache.models, cached: true };
+    }
+    if (groqModelsInflight) return groqModelsInflight;
+    groqModelsInflight = (async () => {
+      try {
+        const resp = await fetch("https://api.groq.com/openai/v1/models", {
+          method: "GET",
+          headers: { "Authorization": `Bearer ${key}` },
+        });
+        if (!resp.ok) {
+          logWarn("ai.groq.models.fail", { status: resp.status });
+          populateGroqDropdowns(cache.models || []);
+          return { ok: false, status: resp.status };
+        }
+        const raw = await resp.json();
+        const models = Array.isArray(raw && raw.data)
+          ? raw.data.map((m) => (m && typeof m.id === "string" ? m.id : null)).filter(Boolean)
+          : [];
+        state.ai.groq.modelsCache = { fetchedAt: Date.now(), models };
+        saveAiConfig().catch(() => {});
+        populateGroqDropdowns(models);
+        logInfo("ai.groq.models.ok", { count: models.length });
+        return { ok: true, models };
+      } catch (e) {
+        logWarn("ai.groq.models.fail", e);
+        populateGroqDropdowns(cache.models || []);
+        return { ok: false, err: String(e && e.message || e) };
+      } finally {
+        groqModelsInflight = null;
+      }
+    })();
+    return groqModelsInflight;
   };
 
   // -------- "Me" username (rewrite voice source) --------
@@ -3156,21 +4769,74 @@
       }
     }
   };
+  // Centralized provider injection. Every `chat()` callsite passes the
+  // logical model (e.g. state.ai.model = "gemma4") — we rewrite the payload
+  // here so callers stay provider-agnostic. For Groq, the model is replaced
+  // with the configured main/fast model based on `kind`.
+  const FAST_KINDS_AI = new Set(["hook", "topic", "hookType", "per-post-analysis", "niche-label"]);
+  const aiInjectPayload = (payload) => {
+    const p = { ...(payload || {}) };
+    const provider = state.ai.provider || "ollama";
+    if (provider === "groq") {
+      p.provider = "groq";
+      p.apiKey = String((state.transcriptCloud && state.transcriptCloud.groqApiKey) || "").trim();
+      p.model = state.ai.groq.model || "llama-3.3-70b-versatile";
+      p.fastModel = state.ai.groq.fastModel || "llama-3.1-8b-instant";
+    } else {
+      p.provider = "ollama";
+      p.endpoint = state.ai.endpoint;
+      // Caller-provided `model` (e.g. visionModel for image kinds) wins.
+    }
+    return p;
+  };
+  // Install the wrapper as soon as the bridge is available. Idempotent —
+  // marks the wrapped fn so reload-during-dev doesn't double-wrap.
+  const installLlmProviderWrapper = () => {
+    if (!window.__fsLlm || !window.__fsLlm.chat) return false;
+    if (window.__fsLlm.chat.__fsWrapped) return true;
+    const orig = window.__fsLlm.chat.bind(window.__fsLlm);
+    const wrapped = (payload) => orig(aiInjectPayload(payload));
+    wrapped.__fsWrapped = true;
+    window.__fsLlm.chat = wrapped;
+    return true;
+  };
+  if (!installLlmProviderWrapper()) {
+    // Bridge may not have loaded yet — retry on next tick.
+    setTimeout(installLlmProviderWrapper, 0);
+  }
+
   const checkAiHealth = async () => {
+    if (!window.__fsLlm) {
+      setAiHealth(false, "✗ llm-bridge unavailable");
+      return { ok: false, err: "llm-bridge unavailable" };
+    }
+    const provider = state.ai.provider || "ollama";
     setAiHealth(null, "checking…");
     try {
-      const body = await (window.__fsLlm
-        ? window.__fsLlm.healthCheck(state.ai.endpoint)
-        : Promise.reject(new Error("llm-bridge unavailable")));
+      let body;
+      if (provider === "groq") {
+        const apiKey = String((state.transcriptCloud && state.transcriptCloud.groqApiKey) || "").trim();
+        if (!apiKey) {
+          setAiHealth(false, "✗ no Groq key set");
+          logWarn("ai.health.fail", { provider, err: "no-key" });
+          return { ok: false, err: "no-key" };
+        }
+        body = await window.__fsLlm.healthCheck({ provider: "groq", apiKey });
+      } else {
+        body = await window.__fsLlm.healthCheck({ provider: "ollama", endpoint: state.ai.endpoint });
+      }
       const models = (body && body.models) || [];
-      const has = models.some((m) => m === state.ai.model || m.startsWith(state.ai.model + ":"));
-      const note = has ? "" : ` · ${state.ai.model} not pulled`;
-      setAiHealth(true, `✔ ${models.length} model${models.length === 1 ? "" : "s"}${note}`, models);
-      logInfo("ai.health.ok", { models: models.length, endpoint: state.ai.endpoint, hasModel: has });
+      const want = provider === "groq" ? state.ai.groq.model : state.ai.model;
+      const has = models.some((m) => m === want || m.startsWith(want + ":"));
+      const note = has ? "" : ` · ${want} not available`;
+      const label = provider === "groq" ? "Groq" : "Ollama";
+      setAiHealth(true, `${label} · ${want} ✓${note}`, models);
+      logInfo("ai.health.ok", { provider, models: models.length, model: want, hasModel: has });
       return { ok: true, body };
     } catch (e) {
-      setAiHealth(false, `✗ ${String(e && e.message || e).slice(0, 80)}`);
-      logWarn("ai.health.fail", e);
+      const label = provider === "groq" ? "Groq" : "Ollama";
+      setAiHealth(false, `${label} · ✗ ${String(e && e.message || e).slice(0, 80)}`);
+      logWarn("ai.health.fail", { provider, err: String(e && e.message || e) });
       return { ok: false, err: String(e && e.message || e) };
     }
   };
@@ -3671,12 +5337,19 @@
     const cacheKey = `${model}:${(window.__fsLlmHash ? window.__fsLlmHash({ messages, schema: COVER_SCHEMA, cover: p.cover }) : (model + ":" + p.cover))}`;
     if (coverAiCache.has(cacheKey)) {
       const cached = coverAiCache.get(cacheKey);
-      const merged = { ...p, cover_ai: cached };
+      // Derive the visualFormat rollup (talking-head / info-card / ...) for
+      // the in-memory row so the FORMATS chip section updates immediately,
+      // not just after the next rehydrate. setPostCoverAi also re-derives
+      // it on the IDB side so IDB stays canonical.
+      const visualFormat = (globalThis.__fsVisualFormat && typeof globalThis.__fsVisualFormat.deriveVisualFormat === "function")
+        ? globalThis.__fsVisualFormat.deriveVisualFormat(cached)
+        : (p.visualFormat ?? null);
+      const merged = { ...p, cover_ai: cached, visualFormat };
       posts.set(p.id, merged);
       if (window.__fsStore && window.__fsStore.setPostCoverAi) {
         try { await window.__fsStore.setPostCoverAi(p.id, cached); } catch (e) { logWarn("cover.persist.fail", e, { id: p.id }); }
       }
-      logInfo("cover.cached", { id: p.id });
+      logInfo("cover.cached", { id: p.id, visualFormat });
       return cached;
     }
     state.cvInflight.add(p.id);
@@ -3727,7 +5400,10 @@
         model: resp.model || model,
       };
       coverAiCache.set(cacheKey, coverAi);
-      const merged = { ...p, cover_ai: coverAi };
+      const visualFormat = (globalThis.__fsVisualFormat && typeof globalThis.__fsVisualFormat.deriveVisualFormat === "function")
+        ? globalThis.__fsVisualFormat.deriveVisualFormat(coverAi)
+        : null;
+      const merged = { ...p, cover_ai: coverAi, visualFormat };
       posts.set(p.id, merged);
       if (window.__fsStore && window.__fsStore.setPostCoverAi) {
         try { await window.__fsStore.setPostCoverAi(p.id, coverAi); }
@@ -3736,6 +5412,7 @@
       logInfo("cover.ok", {
         id: p.id, hasFace, faceCount: coverAi.faceCount, expr: coverAi.expression,
         textOv: hasTextOverlay, comp: coverAi.composition, color: coverAi.dominantColor,
+        visualFormat,
       });
       return coverAi;
     } catch (e) {
@@ -5032,20 +6709,30 @@
   const rowHTML = (p, i, opts = {}) => {
     const meta = getMetaSync(p.id) || { pinned: false, status: null, note: "", tags: [] };
     const velocity = p.velocityViewsPerHr || 0;
+    const vph = p.vph || 0;
     const cpr = p.cpr || 0;
     const primary =
-      state.sort === "outlier"
+      state.sort === "relevance"
+        ? `<span class="fs-score ${p.__fsRelevance >= 0.6 ? "fs-warm" : ""}" title="${escHTML(p.__fsRelevanceReason || "baseline")}">${p.__fsRelevance != null ? p.__fsRelevance.toFixed(2) : "—"}</span>`
+        : state.sort === "outlier"
         ? `<span class="fs-score ${p._score >= 2 ? "fs-warm" : ""}">${fmtScore(p._score)}</span>`
         : state.sort === "status"
           ? `<span class="fs-score">${meta.status ? escHTML(meta.status) : "—"}</span>`
           : state.sort === "velocity"
             ? `<span class="fs-score ${velocity > 0 ? "fs-warm" : ""}">${velocity > 0 ? fmt(Math.round(velocity)) + "/hr" : "—"}</span>`
-            : state.sort === "cpr"
-              ? `<span class="fs-score ${cpr >= 20 ? "fs-warm" : ""}">${cpr ? cpr.toFixed(1) : "—"}</span>`
-              : `<span class="fs-score">${fmt(p[state.sort] || 0)}</span>`;
+            : state.sort === "vph"
+              ? `<span class="fs-score ${vph > 0 ? "fs-warm" : ""}" title="Views ÷ hours since posted">${vph > 0 ? fmt(Math.round(vph)) + "/hr" : "—"}</span>`
+              : state.sort === "cpr"
+                ? `<span class="fs-score ${cpr >= 20 ? "fs-warm" : ""}">${cpr ? cpr.toFixed(1) : "—"}</span>`
+                : `<span class="fs-score">${fmt(p[state.sort] || 0)}</span>`;
     const cprBadge = cpr > 0 ? `<span class="fs-cpr-badge" title="Comments per 1k likes">${cpr.toFixed(1)} CPR</span>` : "";
     const desc = escHTML(p.desc || "(no caption)").slice(0, 140);
-    const tag = p.surface === "explore" ? " · explore" : p.isReel ? " · reel" : "";
+    // On a profile page, posts the user originally collected from Explore
+    // would otherwise render as "· explore" — misleading when we're scoped
+    // to one creator. Fall through to the format tag (reel / post) instead.
+    const tag = (p.surface === "explore" && pageScope.kind !== "profile")
+      ? " · explore"
+      : p.isReel ? " · reel" : "";
     const rising = p.accelerating ? `<span class="fs-rising" title="Recent velocity > 1.5× average">🔥 RISING</span>` : "";
     const who = p.author ? `@${escHTML(p.author)}` : "(unknown)";
     const dlDisabled = p.videoUrl ? "" : "fs-dl-disabled";
@@ -5057,13 +6744,28 @@
       : "Audio not downloadable (licensed music)";
     const txInflight = state.transcribeInflight.has(p.id);
     const txDone = !!(p.transcript && p.transcript.trim());
-    const txIcon = txInflight ? "⏳" : (txDone ? "📝" : "🎙️");
+    const txIsAlt = txDone && p.transcriptSource === "ig-alt";
+    const txIcon = txInflight ? "⏳" : (txDone ? (txIsAlt ? "📝 alt" : "📝") : "✎");
+    const txSrcBadge = (txDone && p.transcriptSource && !txInflight)
+      ? (() => {
+          const s = p.transcriptSource;
+          const tag = s === "tiktok-vtt" ? "vtt" : s === "ig-alt" ? "alt" : s === "groq-whisper" ? "groq" : s === "hf-whisper" ? "hf" : s === "whisper" ? "whisper" : s;
+          const cls = transcriptSourceClass(s);
+          return `<span class="fs-meta-stat fs-tx-badge ${cls}" title="Transcript source: ${escHTML(TRANSCRIPT_SOURCE_LABELS[s] || s)}">${escHTML(tag)}</span>`;
+        })()
+      : "";
     const txTitle = txInflight
       ? "Transcribing…"
-      : (txDone ? `Re-transcribe (already have ${(p.transcript || "").length} chars)` : "Transcribe via local sidecar");
-    const txBtn = p.videoUrl
-      ? `<button class="fs-tx-btn${txDone ? " fs-tx-done" : ""}${txInflight ? " fs-tx-busy" : ""}" data-act="transcribe" data-id="${escHTML(p.id)}" title="${escHTML(txTitle)}" ${txInflight ? "disabled" : ""}>${txIcon}</button>`
-      : "";
+      : (txDone
+        ? `Re-transcribe (already have ${(p.transcript || "").length} chars)`
+        : (p.videoUrl ? "Transcribe via local sidecar" : "No video URL (image post)"));
+    const txDisabledCls = p.videoUrl ? "" : " fs-tx-disabled";
+    // Free tier: transcription is locked. Swap the per-row transcribe button
+    // for an upgrade chip that routes to <appUrl>/billing. Capture continues
+    // unaffected — only this control is gated.
+    const txBtn = proAccess()
+      ? `<button class="fs-tx-btn${txDone ? " fs-tx-done" : ""}${txInflight ? " fs-tx-busy" : ""}${txDisabledCls}" data-act="transcribe" data-id="${escHTML(p.id)}" title="${escHTML(txTitle)}" ${(txInflight || !p.videoUrl) ? "disabled" : ""}>${txIcon}</button>${txSrcBadge}`
+      : `<button class="fs-icon-btn fs-upgrade-chip" data-act="upgrade" data-src="row-transcribe" title="Transcription is a Pro feature — click to upgrade">\uD83D\uDD12 Pro</button>`;
     const tier = p._score >= 10 ? "viral" : p._score >= 5 ? "hot" : p._score >= 2 ? "warm" : "cold";
     // Status takes precedence over tier for the left-border color when set.
     const statusCls = meta.status ? ` fs-status-${meta.status}` : "";
@@ -5089,10 +6791,6 @@
           <div class="fs-ai-row"><span class="fs-ai-label">Topic</span> <button class="fs-ai-chip" data-act="ai-pick" data-key="topic" data-val="${escHTML(p.ai.topic || "")}" title="Filter by this topic">${escHTML(p.ai.topic || "")}</button> <button class="fs-ai-chip fs-ai-chip-angle" data-act="ai-pick" data-key="angle" data-val="${escHTML(p.ai.angle || "")}" title="Filter by this angle">${escHTML(p.ai.angle || "")}</button></div>
         </div>`
       : "";
-    const dxBusy = state.dxInflight && state.dxInflight.has(p.id);
-    const dxBlockHTML = state.expandedId === p.id
-      ? renderDiagnosisBlock(p, dxBusy)
-      : "";
     const expandHTML = state.expandedId === p.id
       ? `<div class="fs-row-expand" data-expand-for="${escHTML(p.id)}">
           <textarea class="fs-note-input" data-id="${escHTML(p.id)}" placeholder="Notes (autosaved)…" rows="3">${escHTML(meta.note || "")}</textarea>
@@ -5101,7 +6799,6 @@
             <input class="fs-tag-input" data-id="${escHTML(p.id)}" type="text" placeholder="Add tag + Enter" autocomplete="off" />
           </div>
           ${aiBlockHTML}
-          ${dxBlockHTML}
           ${transcriptHTML}
         </div>`
       : "";
@@ -5114,18 +6811,18 @@
       </a>
       <div class="fs-meta">
         <button class="fs-meta-caption" data-act="expand" data-id="${escHTML(p.id)}" title="Click to add notes / tags">
-          <span class="fs-meta-line1">${who}${tag} · ${desc}${noteIcon}${rising ? " " + rising : ""}</span>
-          <span class="fs-meta-line2">${fmt(p.likes)} ♥ · ${state.sort === "velocity" ? (velocity > 0 ? fmt(Math.round(velocity)) + "/hr" : "0/hr") : fmt(p.views)} ▶ · ${fmt(p.comments)} 💬 · ${fmtDate(p.createTime)} ${cprBadge}</span>
+          <span class="fs-meta-line1">${who}${tag}${noteIcon}${rising ? " " + rising : ""}</span>
+          <span class="fs-meta-stats">
+            <span class="fs-meta-stat">${fmt(p.likes)} ♥</span>
+            <span class="fs-meta-stat">${state.sort === "velocity" ? (velocity > 0 ? fmt(Math.round(velocity)) + "/hr" : "0/hr") : state.sort === "vph" ? (vph > 0 ? fmt(Math.round(vph)) + "/hr" : "0/hr") : fmt(p.views)} ▶</span>
+            <span class="fs-meta-stat">${fmt(p.comments)} 💬</span>
+            <span class="fs-meta-stat">${fmtDate(p.createTime)}${cprBadge ? " " + cprBadge : ""}</span>
+          </span>
         </button>
       </div>
-      <select class="fs-status-select" data-id="${escHTML(p.id)}" title="Status" aria-label="Status">${statusOptions}</select>
-      ${primary}
-      <button class="fs-pin" data-act="pin" data-id="${escHTML(p.id)}" title="${pinTitle}" aria-pressed="${meta.pinned ? "true" : "false"}">${pinIcon}</button>
-      <button class="fs-dl ${dlDisabled}" data-act="download" data-id="${escHTML(p.id)}" title="${dlTitle}" ${p.videoUrl ? "" : "disabled"}>⬇</button>
-      <button class="fs-dl-audio ${audioDisabled}" data-act="audio-download" data-id="${escHTML(p.id)}" title="${audioTitle}" ${audioUrl ? "" : "disabled"}>🎵</button>
-      <button class="fs-ai-btn${p.ai && p.ai.hook ? " fs-ai-done" : ""}" data-act="ai-analyze" data-id="${escHTML(p.id)}" title="${p.ai && p.ai.hook ? "Re-analyze hook + topic" : "Analyze hook + topic via local LLM"}">🧠</button>
-      <button class="fs-rw-btn${state.rewriteInflight.has(p.id) ? " fs-rw-busy" : ""}" data-act="rw-open" data-id="${escHTML(p.id)}" title="Repurpose for TikTok / YT Shorts / X / LinkedIn" ${state.rewriteInflight.has(p.id) ? "disabled" : ""}>✍</button>
       ${txBtn}
+      <button class="fs-dl-audio ${audioDisabled}" data-act="audio-download" data-id="${escHTML(p.id)}" title="${audioTitle}" ${audioUrl ? "" : "disabled"}>🎵</button>
+      <button class="fs-dl ${dlDisabled}" data-act="download" data-id="${escHTML(p.id)}" title="${dlTitle}" ${p.videoUrl ? "" : "disabled"}>⬇</button>
       ${expandHTML}
     </div>`;
   };
@@ -5137,6 +6834,9 @@
       let active = false;
       if (kind === "pinnedOnly") active = !!state.pinnedOnly;
       else if (kind === "hashtag") active = !!state.hashtagFilter;
+      else if (kind === "keyword") active = !!state.keywordFilter;
+      else if (kind === "niche") active = !!state.nicheFilter;
+      else if (kind === "format") active = !!state.formatFilter;
       else if (kind === "hookType") active = !!state.hookTypeFilter;
       else if (kind === "topic") active = !!state.topicFilter;
       else if (kind === "angle") active = !!state.angleFilter;
@@ -5172,6 +6872,33 @@
         els.hashtagChip.hidden = true;
       }
     }
+    if (els.keywordChip) {
+      if (state.keywordFilter) {
+        els.keywordChip.hidden = false;
+        els.keywordChip.textContent = `“${state.keywordFilter}” ✕`;
+        els.keywordChip.title = `Clear keyword filter`;
+      } else {
+        els.keywordChip.hidden = true;
+      }
+    }
+    if (els.nicheChip) {
+      if (state.nicheFilter) {
+        els.nicheChip.hidden = false;
+        els.nicheChip.textContent = `niche: ${state.nicheFilter} ✕`;
+        els.nicheChip.title = `Clear niche filter`;
+      } else {
+        els.nicheChip.hidden = true;
+      }
+    }
+    if (els.formatChip) {
+      if (state.formatFilter) {
+        els.formatChip.hidden = false;
+        els.formatChip.textContent = `format: ${state.formatFilter} ✕`;
+        els.formatChip.title = `Clear format filter`;
+      } else {
+        els.formatChip.hidden = true;
+      }
+    }
   };
 
   // -------- Stats sidebar (high-leverage aggregations) --------
@@ -5179,24 +6906,116 @@
   // numbers reflect the whole dataset the user has loaded, not just the
   // currently-displayed rows.
   const HASHTAG_RE = /#([\w_]+)/g;
+
+  // Mirror of src/lib/stats.js makeScoreOf — falls back to vph-relative
+  // ratio when _score is 0 (Explore). Keeps stats meaningful on Explore
+  // ("≥2× outlier" ≡ "≥2× the median pace").
+  const makeScoreOf = (list) => {
+    const vphMed = median((list || []).map((p) => p.vph || 0).filter((x) => x > 0));
+    return (p) => {
+      const s = Number(p && p._score) || 0;
+      if (s > 0) return s;
+      const v = Number(p && p.vph) || 0;
+      if (vphMed > 0 && v > 0) return v / vphMed;
+      return 0;
+    };
+  };
+
+  // Curated stopword list (mirrors src/lib/stats.js STOPWORDS).
+  const STOPWORDS = new Set([
+    "the","a","an","of","to","in","on","at","for","with","by","from","as","is",
+    "are","was","were","be","been","being","am","do","does","did","done","doing",
+    "have","has","had","having","will","would","could","should","may","might",
+    "must","can","cant","cannot","wont","dont","didnt","im","ive","its","you",
+    "your","youre","youll","youve","they","them","their","theirs","theyre","we",
+    "our","ours","us","he","she","him","her","his","hers","this","that","these",
+    "those","there","here","what","which","who","whom","whose","when","where",
+    "why","how","not","no","nor","but","or","if","then","than","so","just",
+    "very","too","really","because","while","about","into","over","under",
+    "after","before","again","more","most","much","such","own","same","other",
+    "some","any","all","each","every","both","few","many","only","also","ever",
+    "still","now","never","always","sometimes",
+    "and","yet","up","down","out","off","through","between","among",
+    "via","upon","onto","across","around","without","within","along",
+    "though","although","unless","until","since","whether",
+    "follow","followers","following","like","likes","liked","share","shared",
+    "comment","comments","subscribe","subscribed","subscriber","subscribers",
+    "link","bio","tag","tagged","mention","reels","reel","post","posted",
+    "video","videos","content","check","watch","tap","click","swipe","save",
+    "saved","new","todays","today","yesterday","tomorrow","day","week","month",
+    "year","time","life","make","made","get","got","getting","gets","go","going",
+    "went","let","lets","want","wanted","need","needed","know","known","see",
+    "seen","said","say","says","one","two","three","first","last","next","best",
+    "good","great","nice","amazing","awesome","love","loved","loves","hate",
+    "thing","things","stuff","way","ways","lot","lots","little","big","small",
+    "okay","ok","yeah","yes","yep","nope",
+  ]);
+  const URL_RE = /https?:\/\/\S+/g;
+  const TAG_AT_RE = /[#@][\w_]+/g;
+  const WORD_RE = /\p{L}[\p{L}\p{M}']{2,}/gu;
+  const captionWords = (text) => {
+    const cleaned = String(text || "")
+      .replace(URL_RE, " ")
+      .replace(TAG_AT_RE, " ")
+      .toLowerCase();
+    const out = [];
+    for (const m of cleaned.matchAll(WORD_RE)) {
+      const w = m[0].replace(/'$/, "").replace(/^'/, "");
+      if (w.length < 3) continue;
+      if (STOPWORDS.has(w)) continue;
+      out.push(w);
+    }
+    return out;
+  };
+  const computeKeywords = (list, scoreOf) => {
+    const counts = new Map();
+    const sums = new Map();
+    let allSum = 0, allN = 0;
+    for (const p of list) {
+      const s = scoreOf(p);
+      allSum += s; allN++;
+      const seen = new Set();
+      for (const w of captionWords(p.desc || "")) {
+        if (seen.has(w)) continue;
+        seen.add(w);
+        counts.set(w, (counts.get(w) || 0) + 1);
+        sums.set(w, (sums.get(w) || 0) + s);
+      }
+    }
+    const rows = [];
+    for (const [w, n] of counts) {
+      if (n < 3) continue;
+      const meanWith = sums.get(w) / n;
+      const remN = allN - n;
+      const meanWithout = remN > 0 ? (allSum - sums.get(w)) / remN : 0;
+      const lift = meanWithout > 0 ? meanWith / meanWithout : (meanWith > 0 ? Infinity : 0);
+      rows.push({ word: w, n, lift, meanWith });
+    }
+    // Frequency-first for keywords ("commonly used words" — user's literal
+    // ask). Lift is a tie-breaker.
+    rows.sort((a, b) => b.n - a.n || (b.lift || 0) - (a.lift || 0));
+    return rows.slice(0, 15);
+  };
+
   const statsScope = () => {
     // Mirror filtered()'s scope/surface/range/audio filters but skip the
     // `limit` slice and the search/chip/hashtag filters (so the stats
     // describe the unfiltered scope).
     let list = [...posts.values()];
     if (state.scope === "session") list = list.filter((p) => sessionIds.has(p.id));
-    if (state.surface !== "all") list = list.filter((p) => p.surface === state.surface);
-    const days = RANGES[state.range];
-    if (days) {
-      const cutoff = Date.now() / 1000 - days * 86400;
-      list = list.filter((p) => p.createTime >= cutoff);
-    }
+    if (state.surface !== "all") list = list.filter((p) => matchesSurface(p, state.surface));
+    list = applyRangeFilter(list);
     list = list.map((p) => {
       const d = computeDerived(p);
       const cpr = (p.comments || 0) / Math.max(p.likes || 0, 1) * 1000;
-      return { ...p, ...d, velocity: d.velocityViewsPerHr, cpr };
+      const vph = vphSincePosted(p);
+      return { ...p, ...d, velocity: d.velocityViewsPerHr, cpr, vph };
     });
-    list = computeOutliers(list, state.metric);
+    if (pageScope.kind === "explore") {
+      list = list.map((p) => ({ ...p, _score: 0, _scoreBasis: "none" }));
+    } else {
+      list = computeOutliers(list, state.metric);
+    }
     return list;
   };
 
@@ -5207,13 +7026,18 @@
   };
 
   const computeStats = (list) => {
+    // Effective score: real outlier on profile, vph-relative on Explore.
+    // Plumbed through every aggregation that previously read _score so
+    // hashtag lift / format outlier% / hist / cadence stop collapsing to
+    // 0 when scoring is disabled.
+    const scoreOf = makeScoreOf(list);
     const formats = { reel: [], carousel: [], single: [] };
     for (const p of list) formats[formatOf(p)].push(p);
     const formatRows = ["reel", "carousel", "single"].map((f) => {
       const items = formats[f];
       const views = items.map((p) => p.views || 0).filter((x) => x > 0);
       const med = median(views);
-      const outliers = items.filter((p) => (p._score || 0) >= 2).length;
+      const outliers = items.filter((p) => scoreOf(p) >= 2).length;
       const pct = items.length ? (outliers / items.length) * 100 : 0;
       return { format: f, n: items.length, medianViews: med, outlierPct: pct };
     });
@@ -5223,7 +7047,7 @@
     const tagScoreSum = new Map();
     let allScoreSum = 0, allN = 0;
     for (const p of list) {
-      const s = p._score || 0;
+      const s = scoreOf(p);
       allScoreSum += s; allN++;
       const desc = p.desc || "";
       const seen = new Set();
@@ -5265,7 +7089,7 @@
       let b = Math.floor(((exp - minExp) / (maxExp - minExp || 1)) * NB);
       if (b < 0) b = 0;
       if (b >= NB) b = NB - 1;
-      if ((p._score || 0) >= 2) histOut[b]++;
+      if (scoreOf(p) >= 2) histOut[b]++;
       else histNon[b]++;
     }
 
@@ -5282,15 +7106,17 @@
       const dow = d.getDay();
       const hr = d.getHours();
       cell[dow][hr].n++;
-      cell[dow][hr].sum += p._score || 0;
+      cell[dow][hr].sum += scoreOf(p);
     }
 
+    const keywords = computeKeywords(list, scoreOf);
     const authors = new Set(list.map((p) => p.author).filter(Boolean));
     return {
       total: list.length,
       authors: authors.size,
       formats: formatRows,
       hashtags: topTags,
+      keywords,
       hist: { out: histOut, non: histNon, nb: NB, maxLen },
       cpr: { median: cprMed, mean: cprs.length ? cprs.reduce((a, b) => a + b, 0) / cprs.length : 0, n: cprs.length },
       cadence: cell,
@@ -5370,14 +7196,15 @@
 
   const renderStats = () => {
     if (!els.statsBody || !els.statsSection) return;
+    const list = statsScope();
     if (!els.statsSection.open) {
-      // still update summary subline
+      // Cheap subline update: respect the same surface/range filters as
+      // the open view so the count actually changes when filters change.
       if (els.statsSub) {
-        els.statsSub.textContent = `${posts.size} post${posts.size === 1 ? "" : "s"} in scope`;
+        els.statsSub.textContent = `${list.length} post${list.length === 1 ? "" : "s"} in scope`;
       }
       return;
     }
-    const list = statsScope();
     if (!list.length) {
       els.statsBody.innerHTML = `<div class="fs-stats-empty">No posts in scope yet — collect to populate.</div>`;
       if (els.statsSub) els.statsSub.textContent = `0 posts`;
@@ -5403,8 +7230,73 @@
       </table>`;
     const tagList = s.hashtags.length ? `
       <div class="fs-stats-tags">
-        ${s.hashtags.map((t) => `<button class="fs-stats-tag" data-act="stats-tag" data-tag="${escHTML(t.tag)}" title="${t.n} posts · mean score ${t.meanWith.toFixed(2)}x">#${escHTML(t.tag)} <span class="fs-stats-tag-lift">${fmtLift(t.lift)}</span></button>`).join("")}
+        ${s.hashtags.map((t) => `<button class="fs-stats-tag${state.hashtagFilter === t.tag ? " fs-stats-tag-active" : ""}" data-act="stats-tag" data-tag="${escHTML(t.tag)}" title="${t.n} posts · mean score ${t.meanWith.toFixed(2)}x">#${escHTML(t.tag)} <span class="fs-stats-tag-lift">${fmtLift(t.lift)}</span></button>`).join("")}
       </div>` : `<div class="fs-stats-empty">No hashtags reach the n≥3 threshold.</div>`;
+    const kwList = (s.keywords && s.keywords.length) ? `
+      <div class="fs-stats-tags">
+        ${s.keywords.map((k) => `<button class="fs-stats-tag${state.keywordFilter === k.word ? " fs-stats-tag-active" : ""}" data-act="stats-keyword" data-keyword="${escHTML(k.word)}" title="${k.n} posts mention this word · mean score ${k.meanWith.toFixed(2)}x">${escHTML(k.word)} <span class="fs-stats-tag-lift">${k.n}</span></button>`).join("")}
+      </div>` : `<div class="fs-stats-empty">No caption keywords reach the n≥3 threshold.</div>`;
+
+    // ---- Niches: count + average score per unique p.niche label ----
+    const nicheAgg = new Map();
+    for (const p of list) {
+      const n = (typeof p.niche === "string" && p.niche) ? p.niche : null;
+      if (!n) continue;
+      const cur = nicheAgg.get(n) || { n: 0, sum: 0 };
+      cur.n += 1;
+      cur.sum += Number(p._score) || 0;
+      nicheAgg.set(n, cur);
+    }
+    const nicheRows = [...nicheAgg.entries()]
+      .map(([niche, v]) => ({ niche, n: v.n, mean: v.n ? v.sum / v.n : 0 }))
+      .sort((a, b) => b.n - a.n || b.mean - a.mean);
+    const nicheList = nicheRows.length ? `
+      <div class="fs-stats-tags">
+        ${nicheRows.map((r) => `<button class="fs-stats-niche-chip${state.nicheFilter === r.niche ? " fs-stats-tag-active" : ""}" data-act="stats-niche" data-niche="${escHTML(r.niche)}" title="${r.n} posts · mean score ${r.mean.toFixed(2)}x">${escHTML(r.niche)} <span class="fs-stats-tag-lift">${r.n} · ${r.mean.toFixed(2)}×</span></button>`).join("")}
+      </div>` : `<div class="fs-stats-empty">No niche labels yet — cluster creators on the Niche tab.</div>`;
+    const nicheClusterBusy = !!state.nicheClusterBusy;
+    const nicheClusterStatus = state.nicheClusterStatus || "";
+    const nicheActions = `
+      <div class="fs-stats-actions">
+        <button class="fs-icon-btn" data-act="stats-cluster-niches" title="Embed every post in scope, cluster by caption/transcript, then label each cluster with one Gemma call" ${nicheClusterBusy ? "disabled" : ""}>${nicheClusterBusy ? "⏳ Clustering…" : "🪄 Cluster niches"}</button>
+        <span class="fs-stats-hint" data-niche-cluster-label-status>${escHTML(nicheClusterStatus)}</span>
+      </div>`;
+
+    // ---- Formats: prefer visualFormat (cover-AI rollup: talking-head /
+    // info-card / split-screen / product / b-roll) over the legacy
+    // caption-rule `format` (list/story/tutorial/hottake/...) which collapses
+    // talking-head reels to "other" because no caption rule matches them.
+    // Falls back to caption format when cover-AI hasn't run yet.
+    const fmtAgg = new Map();
+    let fmtTotal = 0;
+    let fmtVisualCount = 0;
+    let fmtCaptionOnlyCount = 0;
+    for (const p of list) {
+      const vf = (typeof p.visualFormat === "string" && p.visualFormat) ? p.visualFormat : null;
+      const cf = (typeof p.format === "string" && p.format) ? p.format : null;
+      const f = vf || cf;
+      if (!f) continue;
+      if (vf) fmtVisualCount++; else fmtCaptionOnlyCount++;
+      fmtAgg.set(f, (fmtAgg.get(f) || 0) + 1);
+      fmtTotal += 1;
+    }
+    const formatRows2 = [...fmtAgg.entries()]
+      .map(([format, n]) => ({ format, n }))
+      .sort((a, b) => b.n - a.n);
+    const formatChips = formatRows2.length ? `
+      <div class="fs-stats-tags">
+        ${formatRows2.map((r) => `<button class="fs-stats-format-chip${state.formatFilter === r.format ? " fs-stats-tag-active" : ""}" data-act="stats-format" data-format="${escHTML(r.format)}" title="${r.n} posts classified as ${r.format}">${escHTML(r.format)} <span class="fs-stats-tag-lift">${r.n}</span></button>`).join("")}
+      </div>` : `<div class="fs-stats-empty">No format labels yet — click “Detect visual format” below.</div>`;
+    const cvBusy = !!(state.cvBatch && state.cvBatch.running);
+    const cvProgress = cvBusy && state.cvBatch.total
+      ? ` (${state.cvBatch.done}/${state.cvBatch.total})`
+      : "";
+    const formatActions = `
+      <div class="fs-stats-actions">
+        <button class="fs-icon-btn" data-act="stats-detect-visual-format" title="Run cover-AI on the top ${Math.min(list.length, 20)} posts — produces talking-head/info-card/split-screen/product/b-roll/other labels" ${cvBusy ? "disabled" : ""}>${cvBusy ? `⏳ Analyzing…${cvProgress}` : "👁️ Detect visual format"}</button>
+        <button class="fs-icon-btn" data-act="stats-detect-formats" title="Rule-based caption format detection (list / story / tutorial / before-after / …). Fast, no LLM. Talking-head reels usually fall to 'other' — use Detect visual format above for those.">⚡ Caption fallback</button>
+        <span class="fs-stats-hint">${fmtTotal} of ${list.length} classified${fmtVisualCount ? ` • ${fmtVisualCount} visual` : ""}${fmtCaptionOnlyCount ? ` • ${fmtCaptionOnlyCount} caption-only` : ""}</span>
+      </div>`;
     const histLegend = `
       <div class="fs-stats-legend">
         <span><span class="fs-stats-sw fs-stats-sw-out"></span>outliers ≥2×</span>
@@ -5423,6 +7315,20 @@
         ${tagList}
       </div>
       <div class="fs-stats-block">
+        <div class="fs-stats-h">Caption keywords <span class="fs-stats-hint">click to filter by niche term</span></div>
+        ${kwList}
+      </div>
+      ${pageScope.kind === "profile" ? "" : `<div class="fs-stats-block">
+        <div class="fs-stats-h">Niches <span class="fs-stats-hint">click to filter</span></div>
+        ${nicheList}
+        ${nicheActions}
+      </div>`}
+      <div class="fs-stats-block">
+        <div class="fs-stats-h">Formats <span class="fs-stats-hint">click to filter</span></div>
+        ${formatChips}
+        ${formatActions}
+      </div>
+      <div class="fs-stats-block">
         <div class="fs-stats-h">Caption length · outliers vs others</div>
         ${statsHistSVG(s.hist)}
         ${histLegend}
@@ -5435,24 +7341,6 @@
         <div class="fs-stats-h">Posting cadence · mean outlier score</div>
         ${statsHeatmapSVG(s.cadence)}
       </div>
-      <div class="fs-stats-block">
-        <div class="fs-stats-h">LLM analysis <span class="fs-stats-hint">hook + topic via local Gemma (only score ≥1.5×)</span></div>
-        <div class="fs-stats-ai-row">
-          <button class="fs-icon-btn" data-act="ai-batch" data-n="10" title="Analyze top 10 outliers (score≥1.5×)">🧠 Analyze top 10</button>
-          <button class="fs-icon-btn" data-act="ai-batch" data-n="25" title="Analyze top 25 outliers (score≥1.5×)">Top 25</button>
-          <button class="fs-icon-btn" data-act="ai-batch" data-n="50" title="Analyze top 50 outliers (score≥1.5×)">Top 50</button>
-        </div>
-      </div>
-      <div class="fs-stats-block">
-        <div class="fs-stats-h">Hook × Topic clusters <span class="fs-stats-hint">click a row to filter</span></div>
-        ${patternsBlockHTML(list)}
-      </div>
-      <div class="fs-stats-block">
-        <div class="fs-stats-h">Outlier diagnosis <span class="fs-stats-hint">multimodal Gemma on cover · score ≥3× · sequential</span></div>
-        <div class="fs-stats-ai-row">
-          <button class="fs-icon-btn" data-act="dx-batch" data-n="10" title="Diagnose top 10 outliers (score≥3×) — explains WHY each beat the baseline">🔍 Diagnose top 10 outliers</button>
-        </div>
-      </div>
     `;
   };
 
@@ -5464,6 +7352,26 @@
     requestAnimationFrame(() => {
       renderQueued = false;
       buildUI();
+      // Tier gate: on Explore + free, swap the scroll-list + stats panel for
+      // an upgrade card. Capture keeps running in the background (harvest()
+      // is wired into the network interceptor, not into render).
+      const lockExplore = pageScope.kind === "explore" && !proAccess();
+      if (els.root) els.root.classList.toggle("fs-locked-explore", lockExplore);
+      if (lockExplore) {
+        els.count.textContent = "— posts";
+        els.authors.textContent = "— authors";
+        updateBulkTxButton();
+        renderBulkTxStatus();
+        els.list.innerHTML = `
+          <div class="fs-upgrade-card" role="region" aria-label="Pro feature">
+            <div class="fs-upgrade-card-icon">\uD83D\uDD12</div>
+            <div class="fs-upgrade-card-title">Explore-page research is a Pro feature.</div>
+            <p class="fs-upgrade-card-body">Free covers your own profile. Upgrade to research Explore, For You, and Search across creators.</p>
+            <button class="fs-icon-btn fs-upgrade-cta" data-act="upgrade" data-src="explore-card">Upgrade</button>
+          </div>`;
+        logInfo("tier.explore.lock", { scope: pageScope.kind });
+        return;
+      }
       const list = filtered();
       const authors = new Set(list.map((p) => p.author).filter(Boolean)).size;
       els.count.textContent = `${list.length} posts`;
@@ -5478,6 +7386,8 @@
       renderChips();
       renderStats();
       renderPipelineEta();
+      updateBulkTxButton();
+      renderBulkTxStatus();
       logInfo("filter.applied", {
         limit: state.limit,
         range: state.range,
@@ -5725,6 +7635,7 @@
     else if (state.view === "settings") renderSettings();
     else if (state.view === "sounds") renderSounds();
     if (state.radar) renderRadar();
+    updatePinBtn();
   };
 
   const toggleRadar = () => {
@@ -5749,6 +7660,7 @@
     if (els.nicheAddCurrent) {
       els.nicheAddCurrent.disabled = !(pageScope.kind === "profile" && pageScope.username);
     }
+    updatePinBtn();
   };
 
   const upsertCreator = async (username, patch = {}) => {
@@ -5814,10 +7726,171 @@
     }
   };
 
+  // Mirror of src/analysis/post-analysis.js detectFormat() — keep in sync.
+  // Pure rule-based (no LLM); first match wins.
+  const FORMATS = ["list", "story", "tip", "tutorial", "hottake", "reaction", "dayinlife", "beforeafter", "other"];
+  const detectFormat = (p) => {
+    const desc = String((p && p.desc) || "");
+    const lower = desc.toLowerCase();
+    const trimmed = desc.trim();
+    const lowerTrimmed = trimmed.toLowerCase();
+    const segs = Array.isArray(p && p.transcriptSegments) ? p.transcriptSegments : null;
+    const transcript = (segs && segs.length
+      ? segs.map((s) => String((s && s.text) || "")).join(" ")
+      : String((p && p.transcript) || "")).toLowerCase();
+    if (/^\d+[.\s]/.test(trimmed)) return "list";
+    const lines = desc.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (lines.filter((l) => /^([-•]|\d+\.)\s*\S/.test(l)).length >= 3) return "list";
+    if (/\bstep\s*1\b/.test(lower) || /\bhow to\b/.test(lower) || /\btutorial\b/.test(lower)
+      || /\bguide\b/.test(lower) || /\bstep\s*1\b/.test(transcript) || /\bstep\s*one\b/.test(transcript)) return "tutorial";
+    if ((/\bbefore\b/.test(lower) && /\bafter\b/.test(lower)) || /\btransformation\b/.test(lower) || /\bresults\b/.test(lower)) return "beforeafter";
+    if (/\bday in (my )?life\b/.test(lower) || /\bday in\b/.test(lower) || /\bmorning routine\b/.test(lower) || /\bdaily routine\b/.test(lower)) return "dayinlife";
+    if (/\breact(ing)?\b/.test(lower) || /\bmy thoughts on\b/.test(lower) || /\bwatching\b/.test(lower)) return "reaction";
+    if (/\bunpopular opinion\b/.test(lower) || /\bhot take\b/.test(lower) || /i['’]ll say it\b/.test(lower) || /\bcontroversial\b/.test(lower)) return "hottake";
+    if (/\btip:\s/.test(lower) || /\bpro tip\b/.test(lower) || /\bquick tip\b/.test(lower) || /^if you\s+\S+/.test(lowerTrimmed)) return "tip";
+    const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
+    const fp = (lower.match(/\b(i|me|my|we)\b/g) || []).length;
+    if (fp >= 3 && wordCount >= 30) return "story";
+    return "other";
+  };
+
+  // Run rule-based detectFormat() on every post in the current Stats scope
+  // and persist the labels via setPostFormat. Instant; toast confirms count.
+  const runDetectFormats = async () => {
+    const scope = statsScope();
+    if (!scope.length) { setStatus("no posts in scope"); return; }
+    const store = window.__fsStore;
+    if (!store || typeof store.setPostFormat !== "function") {
+      setStatus("format detect: store unavailable");
+      return;
+    }
+    let n = 0, fail = 0;
+    for (const p of scope) {
+      try {
+        const f = detectFormat(p);
+        if (!FORMATS.includes(f)) continue;
+        await store.setPostFormat(p.id, f);
+        const live = posts.get(p.id);
+        if (live) live.format = f;
+        n += 1;
+      } catch (e) {
+        fail += 1;
+        logWarn("format.detect.fail", e, { id: p.id });
+      }
+    }
+    logInfo("format.detect.done", { n, fail, scope: scope.length });
+    setStatus(`detected formats on ${n} post${n === 1 ? "" : "s"}${fail ? ` · ${fail} failed` : ""}`);
+    render();
+  };
+
+  // Embed scope posts, cluster by niche, label each cluster with ONE
+  // Gemma call (cached by exemplar-postId hash). Writes the label back to
+  // every member post via __fsStore.setPostNiche.
+  const labelNicheClusters = async () => {
+    const ncl = window.__fsNicheCluster;
+    if (!ncl) { setStatus("niche-cluster runtime unavailable"); return; }
+    if (!window.__fsLlm) { setStatus("LLM bridge unavailable"); return; }
+    if (!window.__fsStore) { setStatus("store unavailable"); return; }
+    if (state.nicheClusterBusy) return;
+    const scope = statsScope();
+    if (!scope.length) { setStatus("no posts in scope"); return; }
+
+    state.nicheClusterBusy = true;
+    state.nicheClusterStatus = "embedding…";
+    renderStats();
+
+    const t0 = Date.now();
+    logInfo("niche.cluster.label.start", { scope: scope.length });
+
+    const embedFn = (texts) => new Promise((resolve, reject) => {
+      try {
+        chrome.runtime.sendMessage({ type: "fs-bg", cmd: "embed-texts", texts }, (resp) => {
+          const lerr = chrome.runtime.lastError;
+          if (lerr) { reject(new Error(String(lerr.message || lerr))); return; }
+          if (!resp || !resp.ok) { reject(new Error(String(resp && resp.err || "embed failed"))); return; }
+          resolve(resp.vectors || []);
+        });
+      } catch (e) { reject(e); }
+    });
+
+    // IDB-backed cache for cluster labels (reuses pipeline_steps table; the
+    // step name `niche-label` namespaces it from real pipeline rows).
+    const store = window.__fsStore;
+    const cache = {
+      get: async (key) => {
+        try {
+          const row = await store.getPipelineStep(`cluster::${key}`, "niche-label");
+          return row && row.payload ? row.payload.label : null;
+        } catch { return null; }
+      },
+      set: async (key, label) => {
+        try { await store.putPipelineStep(`cluster::${key}`, "niche-label", { label, at: Date.now() }); } catch {}
+      },
+    };
+
+    const getPost = async (id) => posts.get(id) || null;
+    const setPostNiche = async (id, label, basis) => {
+      try {
+        await store.setPostNiche(id, label, basis);
+        const live = posts.get(id);
+        if (live) { live.niche = label; live.nicheBasis = basis; }
+      } catch (e) { logWarn("niche.set.fail", e, { id }); }
+    };
+
+    let clusters = [];
+    let labeled = [];
+    try {
+      const result = await ncl.clusterPostsByNiche(scope, { embedFn });
+      clusters = result.clusters || [];
+      state.nicheClusterStatus = `labeling 0/${clusters.length}…`;
+      renderStats();
+
+      labeled = await ncl.labelClusters(clusters, {
+        chat: (req) => window.__fsLlm.chat(req),
+        getPost,
+        cache,
+        setPostNiche,
+        onProgress: ({ done, total }) => {
+          state.nicheClusterStatus = `labeling ${done}/${total}…`;
+          if (els.statsBody) {
+            const el = els.statsBody.querySelector("[data-niche-cluster-label-status]");
+            if (el) el.textContent = state.nicheClusterStatus;
+          }
+        },
+      });
+      const cached = labeled.filter((c) => c && c.fromCache).length;
+      const fresh = labeled.filter((c) => c && c.label && !c.fromCache).length;
+      state.nicheClusterStatus = `${labeled.length} cluster${labeled.length === 1 ? "" : "s"} · ${fresh} new · ${cached} cached`;
+      logInfo("niche.cluster.label.end", {
+        scope: scope.length,
+        clusters: clusters.length,
+        labeled: fresh,
+        cached,
+        deferred: (result.deferred || []).length,
+        inherited: (result.inherited || []).length,
+        ms: Date.now() - t0,
+      });
+      setStatus(`niches: ${labeled.length} cluster${labeled.length === 1 ? "" : "s"} labeled`);
+    } catch (e) {
+      logWarn("niche.cluster.label.fail", e);
+      state.nicheClusterStatus = `failed: ${String(e && e.message || e).slice(0, 60)}`;
+      setStatus("niche cluster failed");
+    } finally {
+      state.nicheClusterBusy = false;
+      render();
+    }
+  };
+
   // Auto-cluster trigger — fires the background pipeline. We poll cluster-meta
   // until lastRunAt advances, then refresh the panel.
   const runClusterNiches = async () => {
-    const setBadge = (txt) => { if (els.nicheClusterStatus) els.nicheClusterStatus.textContent = txt; };
+    const setBadge = (txt) => {
+      const nodes = els.nicheClusterStatus;
+      if (!nodes) return;
+      // NodeList from querySelectorAll — update every visible badge.
+      if (typeof nodes.forEach === "function") nodes.forEach((el) => { el.textContent = txt; });
+      else nodes.textContent = txt;
+    };
     setBadge("clustering…");
     setStatus("auto-clustering niches…");
     let prevAt = 0;
@@ -5825,8 +7898,36 @@
       const resp0 = await new Promise((res) => chrome.runtime.sendMessage({ type: "fs-bg", cmd: "cluster-meta" }, res));
       prevAt = resp0?.meta?.lastRunAt || 0;
     } catch {}
+    // The SW lives in the extension origin and can't read the page-origin IDB
+    // where our posts AND creators live. Read both here and pass through the
+    // message payload (same workaround the api.sync-posts handler uses).
+    // Creators carry the new bio/category/externalUrl fields that drive the
+    // bio-first niche cascade (src/lib/niche-signal.js).
+    let postsForCluster = [];
+    let creatorsForCluster = [];
     try {
-      chrome.runtime.sendMessage({ type: "fs-bg", cmd: "cluster-niches-now" }, (resp) => {
+      const store = window.__fsStore;
+      if (store && typeof store.getAll === "function") {
+        postsForCluster = await store.getAll();
+      }
+      if (store && typeof store.getAllCreators === "function") {
+        creatorsForCluster = await store.getAllCreators();
+      }
+    } catch (e) { logWarn("cluster.read-store.fail", e); }
+    const bioCovered = creatorsForCluster.filter((c) => c && c.bioCapturedAt > 0).length;
+    logInfo("cluster.posts-ready", {
+      postCount: postsForCluster.length,
+      creatorCount: creatorsForCluster.length,
+      bioCovered,
+      bioCoverage: creatorsForCluster.length ? Math.round(100 * bioCovered / creatorsForCluster.length) + "%" : "0%",
+    });
+    try {
+      chrome.runtime.sendMessage({
+        type: "fs-bg",
+        cmd: "cluster-niches-now",
+        posts: postsForCluster,
+        creators: creatorsForCluster,
+      }, (resp) => {
         logInfo("cluster.start.ack", { resp });
       });
     } catch (e) {
@@ -6140,6 +8241,11 @@
     aiSync("aiModel", state.ai.model);
     aiSync("aiVisionModel", state.ai.visionModel);
     aiSync("aiConcurrency", state.ai.concurrency);
+    aiSync("aiProvider", state.ai.provider);
+    applyProviderUi();
+    // Populate Groq dropdowns from cache, then trigger a (cached) refresh.
+    populateGroqDropdowns(state.ai.groq.modelsCache && state.ai.groq.modelsCache.models || []);
+    refreshGroqModels().catch(() => {});
     checkAiHealth().catch(() => {});
     if (window.__fsStore && els.setInfo) {
       try {
@@ -6971,10 +9077,27 @@
     loadWebhookConfig().catch(() => {});
     loadSinkConfig().catch(() => {});
     loadTranscribeConfig().catch(() => {});
+    loadTranscriptCloudConfig().catch(() => {});
     loadAiConfig().catch(() => {});
     loadMeConfig().catch(() => {});
     buildUI();
     render();
+    // Hydrate the tier cache + subscribe to live flips. When the user
+    // upgrades in another tab, /v1/billing/webhook → background →
+    // chrome.storage.local["fs.api.tier"] changes → onTierChange fires →
+    // re-render and the locked surfaces unlock without a reload.
+    try {
+      const tg = globalThis.FeedSorterTierGate;
+      if (tg) {
+        tg.getTier().then(() => {
+          try { render(); } catch (e) { logWarn("tier.boot.render.fail", e); }
+        });
+        tg.onTierChange((next, prev) => {
+          logInfo("tier.change", { from: prev, to: next });
+          try { render(); } catch (e) { logWarn("tier.change.render.fail", e); }
+        });
+      }
+    } catch (e) { logWarn("tier.boot.fail", e); }
     logInfo("boot", {
       scope: pageScope,
       path: location.pathname,
@@ -6985,6 +9108,11 @@
       downloadFolder: PLATFORM_DOWNLOAD_FOLDER,
     });
     if (pageScope.kind === "other") setStatus("idle (off-feed page)");
+    // Bio-first niche cascade input: on profile boots, ask injected.js to
+    // hit IG's web_profile_info endpoint so we get the user's biography +
+    // category. The response flows through the existing `feed-response`
+    // channel and lands in IDB via the profile branch added above.
+    maybeFetchProfileInfo();
     // Kick off store init + rehydrate. Safe even on "other" pages —
     // getByScope returns [] for kind=other.
     if (window.__fsStore) {

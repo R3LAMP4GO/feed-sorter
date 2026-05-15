@@ -1,0 +1,70 @@
+
+cluster-niches  •  /Users/imorgado/Downloads/feed-sorter-instagram/tmp/library-export.json
+creators: 1056  •  posts: 1694  •  sim: 0.55
+
+clustered in 311ms
+
+─── claude / code / use  (7 creators)
+    @heystevetan                  2 posts
+    @marketingwithgaurav          1 posts
+    @mavgpt                       1 posts
+    @aitoolbox.in                 1 posts
+    @claudeai                     1 posts
+    @sifuyik                      1 posts
+    @patsunrick                   1 posts
+
+─── unlabeled  (7 creators)
+    @ruo                          4 posts
+    @it.is.joao                   2 posts
+    @jan_schmidtchen              1 posts
+    @svarmorsdr0mmen              1 posts
+    @sleepycharlieithink          1 posts
+    @whereismas                   1 posts
+    @beanexplains                 1 posts
+
+─── lying / blossoms / swagrman  (5 creators)
+    @landonbtw                    2 posts
+    @beneely                      1 posts
+    @nikolaisavic                 1 posts
+    @lacy.himself                 1 posts
+    @carsonreed                   1 posts
+
+─── trios / yapper / listener  (5 creators)
+    @evangilbert101               1 posts
+    @riccardoricci.shop           1 posts
+    @mondo_pk                     1 posts
+    @husk.irl                     1 posts
+    @iamchrischung                1 posts
+
+─── speak / easy / pack003  (4 creators)
+    @djkrell                      1 posts
+    @dinperlis                    1 posts
+    @travelwdan                   1 posts
+    @npcfaizan                    1 posts
+
+─── lock / generational / coder  (4 creators)
+    @abdulla_ababakre             2 posts
+    @sir_puffer                   1 posts
+    @luhgangwrld                  1 posts
+    @newageceo                    1 posts
+
+─── best / zone / bro  (3 creators)
+    @nkirknz                      1 posts
+    @landon_paschall              1 posts
+    @lucassiehl                   1 posts
+
+─── tuxedo / scenery / therapy  (3 creators)
+    @tuxedosociety                2 posts
+    @ni.jin_                      1 posts
+    @dinglaotoubbq                1 posts
+
+─── tail (1000 clusters with < 3 creators, 1018 creators total) ───
+    singletons: 982
+    unlabeled cluster present: true
+
+─── summary ───
+  shown clusters (≥3 creators):  8
+  total clusters:                       1008
+  largest cluster:                      7 creators (claude / code / use)
+  creators in top-10 clusters:          42 / 1056
+

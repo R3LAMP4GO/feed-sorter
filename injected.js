@@ -54,11 +54,33 @@
     collect() { send("start-collect"); return "started"; },
     stop()    { send("stop-collect");  return "stopping"; },
     setFilter(key, value) { send("set-filter", { key, value }); },
+    // Explicit profile-info fetch — IG embeds the user blob in the initial
+    // HTML so the XHR interceptor never fires for plain profile loads. The
+    // content script triggers this via window.postMessage on boot/scope
+    // change when scope.kind === "profile". We use page-world fetch so
+    // (a) the wrapped origFetch below still posts the response back through
+    //     the same `feed-response` channel the rest of the parsers use,
+    // (b) credentials + ALL of IG's page-defined fetch defaults flow through.
+    fetchProfile(platform, username) {
+      if (!username) return Promise.resolve(false);
+      const p = String(platform || "").toLowerCase();
+      if (p === "instagram") {
+        const url = `/api/v1/users/web_profile_info/?username=${encodeURIComponent(username)}`;
+        return window.fetch(url, {
+          credentials: "include",
+          headers: { "X-IG-App-ID": "936619743392459" },
+        }).then(() => true).catch(() => false);
+      }
+      // TikTok signature/bio is embedded in the page's __UNIVERSAL_DATA_FOR_REHYDRATION__
+      // script tag rather than fetched as XHR — handled separately by the
+      // content script's DOM scrape (not implemented here yet).
+      return Promise.resolve(false);
+    },
   };
   Object.defineProperty(window, "fs", { value: api, configurable: true });
   console.log("%c[FS] page-world API ready: window.fs.tail(), fs.logs(), fs.posts(), fs.collect()", "color:#e1306c");
 
-  // Listen for log entries posted by the content script.
+  // Listen for log entries + command messages posted by the content script.
   window.addEventListener("message", (ev) => {
     if (ev.source !== window) return;
     const d = ev.data;
@@ -66,12 +88,28 @@
     if (d.kind === "log" && d.entry) {
       LOG_BUF.push(d.entry);
       if (LOG_BUF.length > LOG_MAX) LOG_BUF.shift();
+      return;
+    }
+    if (d.kind === "fetch-profile" && d.username) {
+      // Fire-and-forget. The wrapped window.fetch below will post the
+      // response back through the existing `feed-response` channel; the
+      // content script's profile branch (src/lib/profile-parser-runtime.js)
+      // parses + persists onto the creators row.
+      api.fetchProfile(d.platform, d.username);
     }
   });
 
   // We try to ID feed-bearing responses by URL too, in case the DNR rule
   // didn't fire (cross-subdomain etc.).
-  const URL_RE = /\/(api\/v1\/(feed\/user|clips\/user|discover)|graphql\/query|api\/(post|recommend|explore|related)\/item_list)/;
+  // YouTube innertube interception: pattern from
+  // `zerodytrash/Simple-YouTube-Age-Restriction-Bypass` `main.js` — wrap
+  // fetch + XHR, match /youtubei/v1/(player|next|browse) URLs, surface the
+  // payload to the content script via window.postMessage.
+  //
+  // Profile-info endpoints were added later (bio-first niche cascade,
+  // src/lib/niche-signal.js): IG `users/web_profile_info`,
+  // legacy `users/<id>/info`, and TT `api/user/detail`.
+  const URL_RE = /\/(api\/v1\/(feed\/user|clips\/user|discover|users\/web_profile_info|users\/[0-9]+\/info)|graphql\/query|api\/(post|recommend|explore|related|user)\/(item_list|detail)|youtubei\/v1\/(player|next|browse))/;
 
   const post = (payload) => {
     try { window.postMessage({ source: SOURCE, ...payload }, "*"); } catch {}

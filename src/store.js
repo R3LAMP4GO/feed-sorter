@@ -23,7 +23,7 @@
   if (window.__fsStore) return;
 
   const DB_NAME = "feed-sorter";
-  const DB_VERSION = 9;
+  const DB_VERSION = 11;
   const STORE = "posts";
   const META_STORE = "meta";
   const CREATOR_STORE = "creators";
@@ -145,6 +145,100 @@
               migrated
             );
           } catch {}
+        }
+        if (oldVersion < 10 && db.objectStoreNames.contains(STORE)) {
+          // Add three optional classification fields to every existing post:
+          //   niche       — cluster label (string | null)
+          //   nicheBasis  — "text" | "tags" | "author" | "visual" | null
+          //   format      — one of FORMATS from src/analysis/post-analysis.js | null
+          // No-op: just stamps null on rows that don't already carry the field
+          // so the schema is uniform; new posts pick them up via setters.
+          const os = transaction.objectStore(STORE);
+          let cursor = await os.openCursor();
+          let touched = 0;
+          while (cursor) {
+            const row = cursor.value;
+            if (row && (row.niche === undefined || row.nicheBasis === undefined || row.format === undefined)) {
+              const next = {
+                ...row,
+                niche: row.niche === undefined ? null : row.niche,
+                nicheBasis: row.nicheBasis === undefined ? null : row.nicheBasis,
+                format: row.format === undefined ? null : row.format,
+              };
+              await os.put(next);
+              touched++;
+            }
+            cursor = await cursor.continue();
+          }
+          if (db.objectStoreNames.contains(META_STORE)) {
+            const m = transaction.objectStore(META_STORE);
+            await m.put({ id: "migrationVersion", value: 10, touched, at: Date.now() });
+          }
+        }
+        if (oldVersion < 11) {
+          // Two additions:
+          //   creators rows: bio/category/fullName/externalUrl/bioCapturedAt
+          //     (powers the bio-first niche cascade in clusterNiches — see
+          //     src/lib/niche-signal.js).
+          //   posts rows: visualFormat (derived from cover_ai by
+          //     src/lib/visual-format.js — talking-head / info-card / etc.).
+          // Both default to empty/null on existing rows; new writes set them
+          // via setters (addCreator patch + setPostCoverAi side-effect).
+          if (db.objectStoreNames.contains(CREATOR_STORE)) {
+            const cs = transaction.objectStore(CREATOR_STORE);
+            let cursor = await cs.openCursor();
+            let touchedC = 0;
+            while (cursor) {
+              const row = cursor.value;
+              if (row && (
+                row.bio === undefined || row.category === undefined ||
+                row.fullName === undefined || row.externalUrl === undefined ||
+                row.bioCapturedAt === undefined
+              )) {
+                await cs.put({
+                  ...row,
+                  bio: row.bio === undefined ? "" : row.bio,
+                  category: row.category === undefined ? "" : row.category,
+                  fullName: row.fullName === undefined ? "" : row.fullName,
+                  externalUrl: row.externalUrl === undefined ? "" : row.externalUrl,
+                  bioCapturedAt: row.bioCapturedAt === undefined ? 0 : row.bioCapturedAt,
+                });
+                touchedC++;
+              }
+              cursor = await cursor.continue();
+            }
+            if (db.objectStoreNames.contains(META_STORE)) {
+              const m = transaction.objectStore(META_STORE);
+              await m.put({ id: "migrationVersion", value: 11, touchedCreators: touchedC, at: Date.now() });
+            }
+          }
+          if (db.objectStoreNames.contains(STORE)) {
+            // Posts: stamp visualFormat. If a row already has cover_ai we
+            // try to derive a name from it (best-effort — the runtime mirror
+            // might not be loaded yet at IDB-open time, in which case we
+            // leave it null and the next setPostCoverAi write fills it).
+            const ps = transaction.objectStore(STORE);
+            const deriveFn = (typeof globalThis !== "undefined" &&
+              globalThis.__fsVisualFormat &&
+              typeof globalThis.__fsVisualFormat.deriveVisualFormat === "function")
+              ? globalThis.__fsVisualFormat.deriveVisualFormat
+              : null;
+            let cursor = await ps.openCursor();
+            let touchedP = 0;
+            while (cursor) {
+              const row = cursor.value;
+              if (row && row.visualFormat === undefined) {
+                const vf = (deriveFn && row.cover_ai) ? deriveFn(row.cover_ai) : null;
+                await ps.put({ ...row, visualFormat: vf });
+                touchedP++;
+              }
+              cursor = await cursor.continue();
+            }
+            if (db.objectStoreNames.contains(META_STORE)) {
+              const m = transaction.objectStore(META_STORE);
+              await m.put({ id: "migrationVersion-v11-posts", value: 11, touchedPosts: touchedP, at: Date.now() });
+            }
+          }
         }
       },
     });
@@ -294,7 +388,11 @@
   };
 
   // Patch a post row in place with a cover-image classification result
-  // (multimodal LLM via src/analysis/cover-analysis.js).
+  // (multimodal LLM via src/analysis/cover-analysis.js). Also derives the
+  // user-facing visualFormat rollup (talking-head / info-card / b-roll / ...)
+  // via src/lib/visual-format-runtime.js when that runtime is loaded.
+  // Falling back to the previous visualFormat keeps consecutive writes
+  // idempotent even if the runtime hasn't attached yet (rare edge in SW).
   const setPostCoverAi = async (id, coverAi) => {
     if (!id || !coverAi) return null;
     const db = await openDb();
@@ -302,7 +400,14 @@
     const os = tx.objectStore(STORE);
     const prev = await os.get(String(id));
     if (!prev) { await tx.done; return null; }
-    const merged = { ...prev, cover_ai: { ...coverAi } };
+    const next = { ...coverAi };
+    const deriveFn = (typeof globalThis !== "undefined" &&
+      globalThis.__fsVisualFormat &&
+      typeof globalThis.__fsVisualFormat.deriveVisualFormat === "function")
+      ? globalThis.__fsVisualFormat.deriveVisualFormat
+      : null;
+    const visualFormat = deriveFn ? deriveFn(next) : (prev.visualFormat ?? null);
+    const merged = { ...prev, cover_ai: next, visualFormat };
     await os.put(merged);
     await tx.done;
     return merged;
@@ -338,11 +443,76 @@
       transcriptSegments: segs,
       transcriptLang: String(payload.language || ""),
       transcriptModel: String(payload.model || ""),
+      transcriptSource: typeof payload.source === "string" && payload.source ? payload.source : "whisper",
       transcriptAt: Date.now(),
     };
     await os.put(merged);
     await tx.done;
     return merged;
+  };
+
+  // Patch a post row with niche cluster label + basis. nicheBasis must be
+  // one of "text" | "tags" | "author" | "visual" | null.
+  const NICHE_BASES = new Set(["text", "tags", "author", "visual"]);
+  const setPostNiche = async (id, niche, basis) => {
+    if (!id) return null;
+    const db = await openDb();
+    const tx = db.transaction(STORE, "readwrite");
+    const os = tx.objectStore(STORE);
+    const prev = await os.get(String(id));
+    if (!prev) { await tx.done; return null; }
+    const nicheVal = (typeof niche === "string" && niche) ? niche : null;
+    const basisVal = (typeof basis === "string" && NICHE_BASES.has(basis)) ? basis : null;
+    const merged = { ...prev, niche: nicheVal, nicheBasis: basisVal };
+    await os.put(merged);
+    await tx.done;
+    return merged;
+  };
+
+  // Patch a post row in place with a visualFormat label directly (when
+  // caller already knows the bucket — e.g. importing or backfilling without
+  // re-running cover-analysis). Pass null to clear.
+  const VISUAL_FORMATS_ALLOWED = new Set([
+    "talking-head", "info-card", "split-screen", "product", "b-roll", "other",
+  ]);
+  const setPostVisualFormat = async (id, visualFormat) => {
+    if (!id) return null;
+    const db = await openDb();
+    const tx = db.transaction(STORE, "readwrite");
+    const os = tx.objectStore(STORE);
+    const prev = await os.get(String(id));
+    if (!prev) { await tx.done; return null; }
+    const vfVal = (typeof visualFormat === "string" && VISUAL_FORMATS_ALLOWED.has(visualFormat))
+      ? visualFormat : null;
+    const merged = { ...prev, visualFormat: vfVal };
+    await os.put(merged);
+    await tx.done;
+    return merged;
+  };
+
+  // Patch a post row with a format label (one of FORMATS from
+  // src/analysis/post-analysis.js, or null to clear).
+  const setPostFormat = async (id, format) => {
+    if (!id) return null;
+    const db = await openDb();
+    const tx = db.transaction(STORE, "readwrite");
+    const os = tx.objectStore(STORE);
+    const prev = await os.get(String(id));
+    if (!prev) { await tx.done; return null; }
+    const fmtVal = (typeof format === "string" && format) ? format : null;
+    const merged = { ...prev, format: fmtVal };
+    await os.put(merged);
+    await tx.done;
+    return merged;
+  };
+
+  // Return all posts whose `niche` field equals the given label. No index;
+  // niche is a low-cardinality categorical so a getAll + filter is fine.
+  const getPostsByNiche = async (niche) => {
+    if (!niche) return [];
+    const db = await openDb();
+    const all = await db.getAll(STORE);
+    return all.filter((p) => p && p.niche === niche);
   };
 
   // -------- meta (per-post user state: pinned/status/note/tags) --------
@@ -431,6 +601,15 @@
     lastScrapedAt: 0,
     scrapeIntervalHrs: DEFAULT_INTERVAL_HRS,
     autoCollect: true,
+    // Profile-derived fields. Populated by content.js when an IG/TT profile
+    // info response (parsed via src/lib/profile-parser-runtime.js) flows in.
+    // bioCapturedAt=0 means "never captured"; the niche cascade uses bio
+    // when bioCapturedAt > 0 AND the bio text passes minBioWords.
+    bio: "",
+    category: "",
+    fullName: "",
+    externalUrl: "",
+    bioCapturedAt: 0,
   });
 
   // Patch flags:
@@ -473,6 +652,11 @@
     if (typeof merged.embeddingAt !== "number") merged.embeddingAt = 0;
     if (typeof merged.lastScrapedAt !== "number") merged.lastScrapedAt = 0;
     if (typeof merged.addedAt !== "number") merged.addedAt = Date.now();
+    if (typeof merged.bio !== "string") merged.bio = "";
+    if (typeof merged.category !== "string") merged.category = "";
+    if (typeof merged.fullName !== "string") merged.fullName = "";
+    if (typeof merged.externalUrl !== "string") merged.externalUrl = "";
+    if (typeof merged.bioCapturedAt !== "number") merged.bioCapturedAt = 0;
     await os.put(merged);
     await tx.done;
     return merged;
@@ -769,6 +953,10 @@
     setPostAi,
     setPostDiagnosis,
     setPostCoverAi,
+    setPostNiche,
+    setPostFormat,
+    setPostVisualFormat,
+    getPostsByNiche,
     getMeta,
     setMeta,
     getAllMeta,

@@ -1,0 +1,181 @@
+
+classify-test  •  /Users/imorgado/Downloads/feed-sorter-instagram/tmp/library-export.json
+posts: 1694  •  min-confidence: 0.4
+
+─── creators (by post count) ───
+@kentjandraa                   336 posts
+  top3: story 0.01  listicle 0.01  tutorial 0.00
+  hist: listicle:5  story:5  tutorial:3  educational:1  talking_head:1
+@slidergraph                    41 posts
+  top3: story 0.11  listicle 0.04
+  hist: story:5
+@y4ainnn                        12 posts
+  top3: (none)
+@isaacbramirez                   7 posts
+  top3: story 0.03
+@rourke                          7 posts
+  top3: educational 0.09  tutorial 0.08  talking_head 0.06
+  hist: tutorial:1  educational:1  talking_head:1
+@higgsfield.ai                   6 posts
+  top3: tutorial 0.17  listicle 0.07
+  hist: listicle:1
+@filianospyre                    6 posts
+  top3: story 0.35  tutorial 0.06
+  hist: story:2
+@twnz.official                   6 posts
+  top3: story 0.06
+@thestandardclothing_            5 posts
+  top3: (none)
+@jordantsanford                  5 posts
+  top3: story 0.04
+@kallawaymarketing               5 posts
+  top3: educational 0.31  story 0.30  listicle 0.22
+  hist: educational:2  story:2  listicle:1  hottake:1  talking_head:1  tutorial:1
+@rubenpalafoxv2                  4 posts
+  top3: tutorial 0.41  educational 0.13  explainer 0.10
+  hist: tutorial:2
+@gottagoh                        4 posts
+  top3: tutorial 0.16  educational 0.06  talking_head 0.04
+  hist: tutorial:1
+@tribonmat_                      4 posts
+  top3: story 0.05
+@jun_yuh                         4 posts
+  top3: tutorial 0.14  educational 0.06  talking_head 0.04
+  hist: tutorial:1
+@tomytaw                         4 posts
+  top3: tutorial 0.16  educational 0.06  story 0.05
+  hist: tutorial:1
+@willrvail                       4 posts
+  top3: tutorial 0.28  educational 0.13  talking_head 0.09
+  hist: tutorial:2
+@airbazoo                        4 posts
+  top3: tutorial 0.28  story 0.19  educational 0.13
+  hist: tutorial:2  story:1  listicle:1
+@jlpctures                       4 posts
+  top3: (none)
+@alexeidelacuesta                4 posts
+  top3: story 0.10
+@bennettlooper                   4 posts
+  top3: story 0.14  tutorial 0.09
+@theheritagelux                  4 posts
+  top3: (none)
+@tomnoske                        4 posts
+  top3: story 0.09
+@ruo                             4 posts
+  top3: (none)
+@polarpro                        4 posts
+  top3: (none)
+  … and 1031 more creators
+
+─── multi-label spotlight ───
+  ig_3890330816759864340  @kallawaymarketing
+    This is Best Viral Formats, episode 1. These are called S-Tier Ranking Videos. To make these, all y…
+    listicle:0.75  educational:0.70  talking_head:0.67  hottake:0.45
+  ig_3885838603607125710  @filmatic
+    Carl Weathers had never boxed a day in his life before Rocky. He was a linebacker for the Oakland R…
+    story:0.90  beforeafter:0.65
+  ig_3886080392768208119  @krsnchez
+    HOW I UPLOAD 4K TO INSTAGRAM ⬇️ Your videos aren’t low quality… You’re just skipping the two steps …
+    story:0.75  beforeafter:0.65  listicle:0.50
+  ig_3885989293902838980  @the_travelcut
+    Do you ever get frozen when it comes to what settings to use to get cinematic shots? Here are some …
+    story:0.75  tutorial:0.65  educational:0.25  talking_head:0.17  explainer:0.16
+  ig_3868631624984942887  @thestrongcook
+    How to Cook Steak pt.1 🥩🥩 (Using a Cake Tester ) - BASICS WITH BEN FULL INSTRUCTIONS BELOW ⬇️ DIS…
+    story:0.75  educational:0.60  tutorial:0.55  talking_head:0.42  explainer:0.33
+  ig_3832537180732413772  @tourqualitygolf
+    A golf glove isn’t just for looks, it can seriously improve your grip, control, and consistency. He…
+    educational:0.85  talking_head:0.59
+  ig_3585521810131387422  @kentjandraa
+    how to make your videos “feel” viral (with this editing speed trick): in order to create a fast-pac…
+    tutorial:0.55  story:0.55  listicle:0.50  educational:0.25  talking_head:0.17
+  ig_3586317682376976449  @kentjandraa
+    how to make yourself “look cinematic” in any video (without a $12,000 camera): this one trick insta…
+    educational:0.60  tutorial:0.55  listicle:0.50  talking_head:0.42  explainer:0.33
+  ig_3833785954000002117  @mobileeditingclub
+    🪩 Stop posting boring campaigns Yes, we know.. Producing campaigns has been incredibly expensive i…
+    story:0.75  tutorial:0.55  educational:0.25  talking_head:0.17
+  ig_3839681395207713802  @futurist__
+    TUTORIAL: Here’s how to make yourself float! 🕊️ Save this and try it out later!🔥
+    tutorial:0.90  educational:0.55  explainer:0.50  talking_head:0.39
+  ig_3855713103653490743  @thefallenpoe.t
+    The strength no one sees 🪽Narrated by TheFallenPoet. I’m learning how to say okay without arguing …
+    story:0.75  tutorial:0.55  reaction:0.55  educational:0.25  talking_head:0.17
+  ig_3869891185658304057  @aitoolbox.in
+    🚨Save this and Follow✅ 99% of Claude users are only using 10% of what it can do. Here’s the full b…
+    tutorial:0.90  educational:0.55  explainer:0.50  talking_head:0.39
+  ig_3872346427032206652  @vira.lstorylab
+    The video captures a surprising and somewhat awkward marriage proposal aboard a crowded airplane. I…
+    beforeafter:0.65  reaction:0.55
+  ig_3875852363101963021  @airbazoo
+    Day 4 of Improving My Filmmaking 🎬 WE BACK! Sorry I know it’s been a minute since the last episode…
+    story:0.75  tutorial:0.55  educational:0.25  talking_head:0.17
+  ig_3877080290099877144  @juliakursten
+    I actually think it is 🥹🤍🎥 Can’t even put into words how grateful I am that I get to live this l…
+    tutorial:0.90  story:0.55  educational:0.25  explainer:0.23  talking_head:0.17
+  ig_3877209146047075456  @iamjusthaidi
+    🤯 The Viral Ghost Effect Tutorial on Your Phone! 👻 Want to create mind-blowing duplicate videos w…
+    tutorial:0.90  reaction:0.55  educational:0.55  listicle:0.50  explainer:0.50  talking_head:0.39
+  ig_3881046169476673266  @rutvillamagna
+    Painting Rocky was incredibly challenging and a very delicate process. 🪨He had to feel like someth…
+    story:0.90  reaction:0.55
+  ig_3884558467985966990  @lina.michy
+    The shots my clients ask for most often. Save this before your next hotel shoot! 📌 In 99% of my st…
+    story:0.75  tutorial:0.55  educational:0.55  talking_head:0.39  explainer:0.30
+  ig_3887662117175749757  @rourke
+    Brands are commissioning AI video work right now. They are not looking for “AI experiments.” They a…
+    educational:0.60  tutorial:0.55  talking_head:0.42  explainer:0.33  story:0.20
+  ig_3889628820553764760  @impactmediahouse
+    Forever keepsakes 🫠 travel advisors friends - want to come home from every FAM trip with actually …
+    story:0.75  tutorial:0.55  listicle:0.35  educational:0.25  talking_head:0.17
+  ig_3889657765845021322  @melefante6
+    Here's the truth nobody wants to say out loud: Bad properties are leaving the market. Why? Because …
+    story:0.75  tutorial:0.55  listicle:0.45  educational:0.25  talking_head:0.17
+  ig_3889703744704833411  @justdodani
+    We’ve all been there: You shoot a visually stunning clip at an incredibly loud location, only to ge…
+    tutorial:0.55  story:0.55  educational:0.55  talking_head:0.39  explainer:0.30
+  ig_3890003327291174192  @roninxsocials
+    Comment “ronin” to see our full ai lead magnet funnel breakdown. Lead magnets are one of the bigges…
+    story:0.75  tutorial:0.55  educational:0.45  talking_head:0.43  hottake:0.30  explainer:0.25
+  ig_3890219152995872863  @daniellewillls
+    notes to my introverted self pt 1 | something so meta about being scared to share a post about bein…
+    story:0.75  reaction:0.55
+  ig_3890345386823959622  @janustiu
+    Comment “Good Vibe” to get my free guide on how to choose the right AI coding tool, including a dec…
+    tutorial:0.90  story:0.55  educational:0.25  explainer:0.23  talking_head:0.17
+  ig_3890443308142676674  @creatorcollege_
+    You’re doing everything right. So why is your growth still stuck? Here’s the truth nobody talks abo…
+    tutorial:0.55  story:0.55  hottake:0.30  talking_head:0.29  educational:0.25
+  ig_3890971765983697092  @__diditee__
+    This is day 1 of using AI like a human 🧑 Ever wondered how to get rid of that ugly color shift whe…
+    tutorial:1.00  story:0.55  listicle:0.50  educational:0.25  explainer:0.25  talking_head:0.17
+  ig_3891076166566884369  @sodigitalcopystudio
+    Real tea 👇🏼 1️⃣ I read a lot. Like, a lot. …and think like a writer (not just a reader). This mea…
+    story:1.00  tutorial:0.55  listicle:0.50  educational:0.25  talking_head:0.17
+  ig_3891164212431659076  @justdodani
+    This is how you can create these high engaging text animations☝🏼 Adding curved, animated titles is…
+    tutorial:0.65  educational:0.55  talking_head:0.39  explainer:0.36
+  ig_3891253226618644402  @buildwithjosefine
+    POV turns into real life faster than people think. A few months ago, I was posting content with bar…
+    story:1.00  tutorial:0.55  educational:0.45  talking_head:0.32  explainer:0.25
+
+─── aggregate ───
+  any-confident-label:    263  (15.5%)
+  multi-label:             50  (3.0%)
+  no-confident-label:    1431  (84.5%)  ← the "?" pile
+
+  label distribution (count where confidence ≥ min):
+    story            122  ████████████████████  avg=0.07
+    tutorial          79  █████████████·······  avg=0.04
+    listicle          72  ████████████········  avg=0.03
+    educational       22  ████················  avg=0.02
+    beforeafter       12  ██··················  avg=0.00
+    reaction          10  ██··················  avg=0.00
+    talking_head       7  █···················  avg=0.02
+    explainer          6  █···················  avg=0.01
+    pov                5  █···················  avg=0.00
+    skit               3  ····················  avg=0.00
+    hottake            1  ····················  avg=0.00
+    tip                0  ····················  avg=0.00
+    dayinlife          0  ····················  avg=0.00
+

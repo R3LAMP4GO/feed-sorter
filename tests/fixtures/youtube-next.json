@@ -1,0 +1,39 @@
+{
+  "contents": {
+    "twoColumnWatchNextResults": {
+      "results": {
+        "results": {
+          "contents": [
+            {
+              "videoPrimaryInfoRenderer": {
+                "title": { "runs": [{ "text": "Morning routine that changed my life" }] },
+                "viewCount": {
+                  "videoViewCountRenderer": {
+                    "viewCount": { "simpleText": "1,234,567 views" },
+                    "shortViewCount": { "simpleText": "1.2M views" }
+                  }
+                },
+                "videoActions": {
+                  "menuRenderer": {
+                    "topLevelButtons": [
+                      {
+                        "toggleButtonRenderer": {
+                          "defaultText": {
+                            "accessibility": {
+                              "accessibilityData": { "label": "like this video along with 89,432 other people" }
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                },
+                "dateText": { "simpleText": "Mar 15, 2026" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

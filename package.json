@@ -2,6 +2,12 @@
   "name": "feed-sorter-instagram",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "node playwright-test.mjs",
     "test:unit": "vitest run",
@@ -9,10 +15,26 @@
     "test:cov": "vitest run --coverage",
     "test:e2e": "playwright test",
     "test:all": "npm run test:unit && npm run test:e2e",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "format": "biome format .",
+    "format:check": "biome format .",
+    "format:fix": "biome format --write .",
+    "check": "biome check .",
+    "check:fix": "biome check --write .",
+    "typecheck": "npm run typecheck --workspaces --if-present",
     "vendor:transformers": "node scripts/vendor-transformers.mjs",
-    "postinstall": "node scripts/vendor-transformers.mjs || true"
+    "postinstall": "node scripts/vendor-transformers.mjs || true",
+    "stripe:login": "stripe login",
+    "stripe:listen": "stripe listen --forward-to=http://localhost:8787/v1/billing/webhook",
+    "stripe:trigger": "stripe trigger checkout.session.completed",
+    "stripe:fixtures": "stripe fixtures apps/api/stripe/fixtures.json",
+    "stripe:bootstrap": "bash apps/api/scripts/stripe-bootstrap.sh",
+    "api:dev": "npm --workspace apps/api run dev",
+    "web:dev": "npm --workspace apps/web run dev"
   },
   "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
     "@playwright/test": "^1.59.1",
     "@vitest/coverage-v8": "^4.1.5",
     "fake-indexeddb": "^6.2.5",

@@ -12,4 +12,18 @@ coverage/
 playwright-report/
 .vscode/
 .idea/
-web/
+/web/
+# Workspaces
+apps/**/node_modules/
+apps/**/.next/
+apps/**/dist/
+apps/**/.turbo/
+# Railway / deploy
+.railway/
+# Stripe CLI
+.stripe/
+# Local env
+.env.local
+apps/**/.env.local
+apps/**/.env
+sidecar/.venv/

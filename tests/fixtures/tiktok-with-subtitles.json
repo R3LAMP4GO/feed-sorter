@@ -1,0 +1,55 @@
+{
+  "itemList": [
+    {
+      "id": "7400000000000000099",
+      "desc": "captioned post",
+      "createTime": 1710000000,
+      "author": {
+        "id": "6749999999999999999",
+        "uniqueId": "captioned.user",
+        "nickname": "Cap"
+      },
+      "video": {
+        "id": "7400000000000000099",
+        "duration": 18,
+        "cover": "https://p16.tiktokcdn.example/cap.jpg",
+        "playAddr": "https://v16.tiktokcdn.example/cap.mp4",
+        "subtitleInfos": [
+          {
+            "LanguageID": "1",
+            "LanguageCodeName": "ita-IT",
+            "Url": "https://v16-webapp.tiktok.com/abc/subtitle.vtt?expires=1710003600&sig=ITA",
+            "Format": "webvtt",
+            "Source": "ASR",
+            "Version": "1"
+          },
+          {
+            "LanguageID": "0",
+            "LanguageCodeName": "eng-US",
+            "Url": "https://v16-webapp.tiktok.com/abc/subtitle.vtt?expires=1710003600&sig=ENG",
+            "Format": "webvtt",
+            "Source": "ASR",
+            "Version": "1"
+          },
+          {
+            "LanguageID": "2",
+            "LanguageCodeName": "spa-ES",
+            "Url": "https://v16-webapp.tiktok.com/abc/subtitle.vtt?expires=1710003600&sig=SPA",
+            "Format": "webvtt",
+            "Source": "MT",
+            "Version": "1"
+          }
+        ]
+      },
+      "stats": {
+        "diggCount": 100,
+        "shareCount": 5,
+        "commentCount": 10,
+        "playCount": 9000,
+        "collectCount": 3
+      }
+    }
+  ],
+  "hasMore": false,
+  "cursor": "0"
+}

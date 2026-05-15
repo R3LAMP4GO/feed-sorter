@@ -8,6 +8,10 @@ import {
   computeCprStats,
   computeCadence,
   computeStats,
+  makeScoreOf,
+  computeKeywords,
+  captionWords,
+  STOPWORDS,
 } from "../../src/lib/stats.js";
 
 const mk = (over = {}) => ({
@@ -136,6 +140,118 @@ describe("computeCadence", () => {
   });
 });
 
+describe("makeScoreOf (Explore fallback)", () => {
+  it("returns _score when present", () => {
+    const list = [mk({ _score: 3, vph: 100 }), mk({ _score: 1, vph: 50 })];
+    const f = makeScoreOf(list);
+    expect(f(list[0])).toBe(3);
+    expect(f(list[1])).toBe(1);
+  });
+  it("falls back to vph / median(vph) when _score is 0 (Explore)", () => {
+    // List has vph values 50, 100, 150 → median = 100.
+    const list = [
+      mk({ _score: 0, vph: 50 }),
+      mk({ _score: 0, vph: 100 }),
+      mk({ _score: 0, vph: 150 }),
+    ];
+    const f = makeScoreOf(list);
+    expect(f(list[0])).toBeCloseTo(0.5);
+    expect(f(list[1])).toBeCloseTo(1);
+    expect(f(list[2])).toBeCloseTo(1.5);
+  });
+  it("returns 0 when neither _score nor vph is positive", () => {
+    const list = [mk({ _score: 0, vph: 0 }), mk({ _score: 0, vph: 0 })];
+    const f = makeScoreOf(list);
+    expect(f(list[0])).toBe(0);
+  });
+});
+
+describe("captionWords", () => {
+  it("strips URLs, hashtags, and @mentions", () => {
+    const ws = captionWords("check https://example.com #fitness @coach awesome routine");
+    // "check" is a stopword → dropped. "awesome" is a stopword → dropped.
+    // "routine" should survive.
+    expect(ws).toContain("routine");
+    expect(ws).not.toContain("check");
+    expect(ws).not.toContain("fitness"); // hashtag stripped before matching
+    expect(ws).not.toContain("coach"); // mention stripped
+    expect(ws).not.toContain("https");
+  });
+  it("drops stopwords and short tokens", () => {
+    const ws = captionWords("I am the one who eats my food");
+    expect(ws.every((w) => !STOPWORDS.has(w))).toBe(true);
+    expect(ws.every((w) => w.length >= 3)).toBe(true);
+  });
+  it("lowercases and dedupes letters from Unicode scripts", () => {
+    const ws = captionWords("Música TRÄINING training Café");
+    expect(ws).toContain("música");
+    expect(ws).toContain("träining");
+    expect(ws).toContain("training");
+    expect(ws).toContain("café");
+  });
+});
+
+describe("computeKeywords", () => {
+  it("returns frequency-sorted niche words above n≥3", () => {
+    const list = [
+      mk({ desc: "morning workout routine", _score: 2 }),
+      mk({ desc: "workout splits routine for beginners", _score: 3 }),
+      mk({ desc: "upper body workout routine", _score: 4 }),
+      mk({ desc: "recipe for protein shake", _score: 1 }),
+      mk({ desc: "recipe of the day", _score: 1 }),
+    ];
+    const r = computeKeywords(list, { minN: 3 });
+    const words = r.map((x) => x.word);
+    expect(words).toContain("workout");
+    expect(words).toContain("routine");
+    // "recipe" only appears in 2 posts → below threshold.
+    expect(words).not.toContain("recipe");
+    // Frequency-first: workout (3) and routine (3) outrank everything below 3.
+    expect(r[0].n).toBe(3);
+  });
+
+  it("falls back gracefully on Explore (scoreOf returns 0)", () => {
+    // _score=0 across the board → sums.get(w)=0 → lift=0.
+    // Should still return rows ordered by frequency without crashing.
+    const list = Array.from({ length: 5 }, (_, i) => mk({
+      desc: "trending hook reveal storyline plot",
+      _score: 0,
+      vph: 100 + i * 10,
+    }));
+    const scoreOf = makeScoreOf(list);
+    const r = computeKeywords(list, { minN: 3, scoreOf });
+    // Words appear in 5 posts each → n=5; words "trending", "hook", etc.
+    expect(r.length).toBeGreaterThan(0);
+    expect(r[0].n).toBe(5);
+  });
+
+  it("dedupes the same word inside one caption", () => {
+    const list = Array.from({ length: 3 }, () => mk({
+      desc: "protein protein protein shake",
+      _score: 2,
+    }));
+    const r = computeKeywords(list, { minN: 3 });
+    const protein = r.find((x) => x.word === "protein");
+    expect(protein.n).toBe(3);
+  });
+});
+
+describe("computeStats on Explore (no _score)", () => {
+  it("format outlierPct uses vph fallback instead of collapsing to 0", () => {
+    // Median vph across the list = 100. Two reels at 100 (=1×), one
+    // viral reel at 500 (=5×) → the 5× post is an outlier under the
+    // vph fallback.
+    const list = [
+      mk({ isReel: true, _score: 0, vph: 100 }),
+      mk({ isReel: true, _score: 0, vph: 100 }),
+      mk({ isReel: true, _score: 0, vph: 500 }),
+    ];
+    const s = computeStats(list);
+    const reel = s.formats.find((r) => r.format === "reel");
+    expect(reel.outlierPct).toBeGreaterThan(0);
+  });
+});
+
 describe("computeStats — 100+ post profile sanity", () => {
   it("aggregates without errors and returns expected shape", () => {
     const tags = ["fitness", "tip", "muscle", "diet"];
@@ -163,6 +279,7 @@ describe("computeStats — 100+ post profile sanity", () => {
     expect(s.formats.reduce((a, r) => a + r.n, 0)).toBe(120);
     expect(s.hashtags.length).toBeGreaterThan(0);
     expect(s.hashtags.length).toBeLessThanOrEqual(15);
+    expect(Array.isArray(s.keywords)).toBe(true);
     expect(s.hist.nb).toBe(20);
     expect(s.hist.out.length).toBe(20);
     expect(s.cpr.n).toBeGreaterThan(0);
