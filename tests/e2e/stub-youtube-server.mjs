@@ -155,6 +155,13 @@ export const startStubServer = () =>
         return;
       }
 
+      // /feed/shorts → snap player page without a video id in the URL.
+      if (url.match(/^\/feed\/shorts\/?(?:\?.*)?$/)) {
+        res.writeHead(200, { "Content-Type": "text/html" });
+        res.end(shortsPlayerHTML("feed001AB_"));
+        return;
+      }
+
       // /@<handle>/shorts → channel grid
       const channelMatch = url.match(/^\/@([\w.-]+)(?:\/shorts)?\/?(?:\?.*)?$/);
       if (channelMatch) {

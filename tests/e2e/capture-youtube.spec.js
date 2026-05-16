@@ -80,6 +80,31 @@ test("capture: youtube shorts permalink only keeps the current short", async () 
   await page.close();
 });
 
+test("capture: /feed/shorts hydrates first visible short metrics from DOM", async () => {
+  const page = await ext.context.newPage();
+  await page.goto(`${server.origin}/feed/shorts`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => !!window.fs, null, { timeout: 10_000 });
+
+  await expect
+    .poll(
+      async () => {
+        const posts = await page.evaluate(() => window.fs.posts());
+        const post = posts.find((p) => p.nativeId === "feed001AB_");
+        return { likes: post?.likes || 0, comments: post?.comments || 0, views: post?.views || 0 };
+      },
+      { timeout: 8_000, intervals: [200, 400, 800] }
+    )
+    .toMatchObject({ likes: 344, comments: 10 });
+
+  const post = await page.evaluate(async () => {
+    const posts = await window.fs.posts();
+    return posts.find((p) => p.nativeId === "feed001AB_");
+  });
+  expect(post.views).toBeGreaterThanOrEqual(13900);
+
+  await page.close();
+});
+
 test("capture: startCollect on /shorts/<id> accumulates shorts visited by collector", async () => {
   const page = await ext.context.newPage();
   await page.goto(`${server.origin}/shorts/abc123XYZ_-`, { waitUntil: "domcontentloaded" });

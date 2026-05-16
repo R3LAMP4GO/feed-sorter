@@ -228,7 +228,7 @@
   if (PLATFORM.platform === "youtube") {
     const onYouTubeNavigate = () => setTimeout(() => {
       try { window.dispatchEvent(new Event("feed-sorter:locationchange")); } catch {}
-      try { hydrateVisibleYouTubeShortFromDom("yt-navigate"); } catch {}
+      try { scheduleYouTubeDomHydration("yt-navigate"); } catch {}
     }, 0);
     window.addEventListener("yt-navigate", onYouTubeNavigate);
     window.addEventListener("yt-navigate-finish", onYouTubeNavigate);
@@ -300,6 +300,29 @@
       doc.querySelector("ytd-shorts ytd-reel-video-renderer") ||
       doc.querySelector("ytd-reel-video-renderer");
   };
+  const activeYouTubeShortVideoIdFromDom = (doc = document) => {
+    const root = activeYouTubeShortRoot(doc);
+    if (!root) return "";
+    const values = [
+      root.getAttribute?.("video-id"),
+      root.getAttribute?.("videoid"),
+      root.getAttribute?.("data-video-id"),
+      root.data?.videoId,
+      root.__data?.data?.videoId,
+      root.__data?.data?.currentVideoEndpoint?.reelWatchEndpoint?.videoId,
+      root.__data?.data?.command?.reelWatchEndpoint?.videoId,
+      root.__data?.data?.endpoint?.reelWatchEndpoint?.videoId,
+      root.querySelector?.("video")?.getAttribute?.("src"),
+      root.querySelector?.("a[href*='/shorts/']")?.getAttribute?.("href"),
+      location.pathname,
+    ];
+    for (const value of values) {
+      const match = String(value || "").match(/(?:\/shorts\/|[?&]v=)([A-Za-z0-9_-]{6,})/);
+      if (match) return match[1];
+      if (/^[A-Za-z0-9_-]{6,}$/.test(String(value || ""))) return String(value);
+    }
+    return "";
+  };
   const textPartsForElement = (el) => {
     if (!el) return [];
     const parts = [];
@@ -361,20 +384,33 @@
       ], /\bviews?\b/i),
     };
   };
+  const fallbackYouTubeShortHydrationIds = () => {
+    const visible = filtered().filter(isYouTubePost);
+    if (visible.length === 1) return [visible[0].id];
+    const now = Date.now();
+    return [...posts.values()]
+      .filter((post) => isYouTubePost(post) && post.surface === "shorts-feed")
+      .filter((post) => sessionIds.has(post.id) || now - (post.lastSeenAt || 0) < 15_000)
+      .sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0))
+      .map((post) => post.id);
+  };
   const hydrateVisibleYouTubeShortFromDom = (reason = "") => {
     if (PLATFORM.platform !== "youtube" || pageScope.kind !== "shorts-feed") return 0;
-    const nativeId = pageScope.videoId || deriveScope().videoId;
-    if (!nativeId) return 0;
-    const id = `yt_${nativeId}`;
+    const nativeId = pageScope.videoId || deriveScope().videoId || activeYouTubeShortVideoIdFromDom();
+    const candidates = nativeId ? [`yt_${nativeId}`] : fallbackYouTubeShortHydrationIds();
+    if (!candidates.length) return 0;
+    const id = candidates.find((candidate) => posts.has(candidate));
+    if (!id) return 0;
     const prev = posts.get(id);
     if (!prev) return 0;
+    const resolvedNativeId = nativeId || prev.nativeId || prev.shortcode || String(id).replace(/^yt_/, "");
     const metrics = scrapeYouTubeShortMetricsFromDom();
     const patch = {
       platform: "youtube",
       surface: "shorts-feed",
       isReel: true,
-      nativeId: prev.nativeId || nativeId,
-      shortcode: prev.shortcode || nativeId,
+      nativeId: prev.nativeId || resolvedNativeId,
+      shortcode: prev.shortcode || resolvedNativeId,
     };
     if (metrics.likes > (prev.likes || 0)) patch.likes = metrics.likes;
     if (metrics.comments > (prev.comments || 0)) patch.comments = metrics.comments;
@@ -395,6 +431,14 @@
     logInfo("youtube.dom-hydrate", { id, reason, likes: merged.likes || 0, comments: merged.comments || 0, views: merged.views || 0 });
     render();
     return 1;
+  };
+  const scheduleYouTubeDomHydration = (reason = "", delays = [0, 250, 750, 1500, 3000]) => {
+    if (PLATFORM.platform !== "youtube" || pageScope.kind !== "shorts-feed") return;
+    for (const delay of delays) {
+      setTimeout(() => {
+        try { hydrateVisibleYouTubeShortFromDom(reason); } catch (e) { logWarn("youtube.dom-hydrate.retry.fail", e, { reason, delay }); }
+      }, delay);
+    }
   };
   const isCurrentDetailVideo = (post) => {
     if (!pageScope.videoId) return true;
@@ -572,7 +616,7 @@
         .catch((e) => logError("store.upsert.fail", e));
     }
     if (items.length) {
-      if (PLATFORM.platform === "youtube") hydrateVisibleYouTubeShortFromDom("ingest");
+      if (PLATFORM.platform === "youtube") scheduleYouTubeDomHydration("ingest");
       render();
     }
     return added;
@@ -7876,6 +7920,7 @@
       total: posts.size,
     });
     render();
+    if (PLATFORM.platform === "youtube") scheduleYouTubeDomHydration("rehydrate");
   };
   window.__feedSorter.rehydrate = rehydrateFromStore;
 
