@@ -43,6 +43,14 @@ const shortsPlayerHTML = (videoId) => `<!doctype html>
 <body>
 <h1>Shorts player</h1>
 <ytd-reel-video-renderer is-active>
+  <div id="short-id">${videoId}</div>
+  <div id="like-button">
+    <button id="like-btn" aria-label="Like this video along with 344 other people">344</button>
+  </div>
+  <ytd-button-renderer id="comments-button">
+    <button id="comments-btn" aria-label="10 comments">10</button>
+  </ytd-button-renderer>
+  <div id="metadata-line"><span aria-label="13.9K views">13.9K views</span></div>
   <div id="navigation-button-down">
     <button id="next-short-btn">Next</button>
   </div>
@@ -51,12 +59,25 @@ const shortsPlayerHTML = (videoId) => `<!doctype html>
 <script>
 let advanceCount = 0;
 window.__nextClicks = 0;
+const setVisibleShort = (id, likes, comments, views) => {
+  window.history.replaceState({}, '', '/shorts/' + id);
+  document.getElementById('short-id').textContent = id;
+  document.getElementById('like-btn').textContent = likes;
+  document.getElementById('like-btn').setAttribute('aria-label', 'Like this video along with ' + likes + ' other people');
+  document.getElementById('comments-btn').textContent = comments;
+  document.getElementById('comments-btn').setAttribute('aria-label', comments + ' comments');
+  const viewEl = document.querySelector('#metadata-line span');
+  viewEl.textContent = views + ' views';
+  viewEl.setAttribute('aria-label', views + ' views');
+  window.dispatchEvent(new Event('yt-navigate-finish'));
+};
 // Each click on the next-button triggers a fresh /player fetch with a new
 // videoId so the collector loop has new posts to ingest on each round.
 document.getElementById('next-short-btn').addEventListener('click', async () => {
   window.__nextClicks++;
   advanceCount++;
   const fakeId = 'next' + advanceCount.toString().padStart(3, '0') + 'AB';
+  setVisibleShort(fakeId, String(344 + advanceCount), String(10 + advanceCount), (13.9 + advanceCount).toFixed(1) + 'K');
   await fetch('/youtubei/v1/player?v=' + fakeId, { method: 'POST', body: '{}' });
 });
 
@@ -108,12 +129,16 @@ export const startStubServer = () =>
         res.end(playerJsonForVideoId(videoId));
         return;
       }
-      // /youtubei/v1/next → next JSON (likes/views/dateText)
+      // /youtubei/v1/next → next JSON (views/dateText only here). Engagement
+      // counts are intentionally absent so the E2E exercises the live Shorts DOM
+      // fallback for like/comment buttons.
       if (url.startsWith("/youtubei/v1/next")) {
         const m = url.match(/[?&]v=([^&]+)/);
         const videoId = m ? decodeURIComponent(m[1]) : "abc123XYZ_-";
         const base = JSON.parse(loadFixture("youtube-next.json"));
         base.currentVideoEndpoint = { reelWatchEndpoint: { videoId } };
+        const primary = base.contents?.twoColumnWatchNextResults?.results?.results?.contents?.[0]?.videoPrimaryInfoRenderer;
+        if (primary) delete primary.videoActions;
         res.writeHead(200, {
           "Content-Type": "application/json",
           "x-feed-sorter-tag": "yt-next",

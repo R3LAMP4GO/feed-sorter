@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { applyFilter, RANGES, matchesSurface } from "../../src/lib/filter.js";
+import {
+  applyFilter,
+  RANGES,
+  matchesSurface,
+  computeDerived,
+  enrichForSort,
+  comparePosts,
+} from "../../src/lib/filter.js";
 
 const NOW = 1_700_000_000_000; // fixed reference time
 const SEC = (offsetDays) => NOW / 1000 - offsetDays * 86400;
@@ -42,18 +49,65 @@ describe("applyFilter", () => {
     expect(out.map((p) => p.id)).toEqual(["fresh"]);
   });
 
-  it("sorts by likes descending", () => {
+  it("sorts every visible numeric option descending with derived fields populated", () => {
+    const hour = 60 * 60 * 1000;
     const list = [
-      post({ id: "a", likes: 1 }),
-      post({ id: "b", likes: 99 }),
-      post({ id: "c", likes: 50 }),
+      post({
+        id: "a",
+        likes: 10,
+        views: 2_400,
+        comments: 10,
+        createTime: NOW / 1000 - 24 * 3600,
+        snapshots: [
+          { capturedAt: NOW - 4 * hour, views: 2_300, likes: 1, comments: 1 },
+          { capturedAt: NOW - 1 * hour, views: 2_400, likes: 2, comments: 2 },
+        ],
+        firstSeenAt: NOW - 4 * hour,
+        lastSeenAt: NOW - 1 * hour,
+      }),
+      post({
+        id: "b",
+        likes: 99,
+        views: 1_200,
+        comments: 1,
+        createTime: NOW / 1000 - 2 * 3600,
+        snapshots: [
+          { capturedAt: NOW - 4 * hour, views: 100, likes: 1, comments: 1 },
+          { capturedAt: NOW - 1 * hour, views: 600, likes: 2, comments: 2 },
+        ],
+        firstSeenAt: NOW - 4 * hour,
+        lastSeenAt: NOW - 1 * hour,
+      }),
+      post({
+        id: "c",
+        likes: 50,
+        views: 900,
+        comments: 60,
+        createTime: NOW / 1000 - 10 * 3600,
+        snapshots: [
+          { capturedAt: NOW - 4 * hour, views: 850, likes: 1, comments: 1 },
+          { capturedAt: NOW - 1 * hour, views: 900, likes: 2, comments: 2 },
+        ],
+        firstSeenAt: NOW - 4 * hour,
+        lastSeenAt: NOW - 1 * hour,
+      }),
     ];
-    const out = applyFilter(
-      list,
-      { sort: "likes", metric: "likes", range: "all", limit: 0, surface: "all" },
-      NOW
-    );
-    expect(out.map((p) => p.id)).toEqual(["b", "c", "a"]);
+    const expectOrder = (sort, ids) => {
+      const out = applyFilter(
+        list,
+        { sort, metric: "likes", range: "all", limit: 0, surface: "all" },
+        NOW,
+      );
+      expect(out.map((p) => p.id)).toEqual(ids);
+    };
+
+    expectOrder("likes", ["b", "c", "a"]);
+    expectOrder("views", ["a", "b", "c"]);
+    expectOrder("comments", ["c", "a", "b"]);
+    expectOrder("recent", ["b", "c", "a"]);
+    expectOrder("velocity", ["b", "a", "c"]);
+    expectOrder("vph", ["b", "a", "c"]);
+    expectOrder("cpr", ["c", "a", "b"]);
   });
 
   it("respects limit", () => {
@@ -81,6 +135,72 @@ describe("applyFilter", () => {
     );
     expect(out[0].id).toBe("3");
     expect(out[0]._score).toBeGreaterThan(out[1]._score);
+  });
+
+  it("can compute velocity from one baseline snapshot plus lastSeenAt/current views", () => {
+    const d = computeDerived(
+      post({
+        views: 1_300,
+        firstSeenAt: NOW - 3 * 60 * 60 * 1000,
+        lastSeenAt: NOW,
+        snapshots: [
+          { capturedAt: NOW - 3 * 60 * 60 * 1000, views: 1_000, likes: 5, comments: 1 },
+        ],
+      }),
+      NOW,
+    );
+
+    expect(d.snapshotCount).toBe(1);
+    expect(d.velocityReady).toBe(true);
+    expect(d.velocityViewsPerHr).toBeCloseTo(100, 5);
+  });
+
+  it("marks brand-new single-snapshot posts as not velocity-ready", () => {
+    const d = computeDerived(
+      post({
+        views: 1_000,
+        firstSeenAt: NOW,
+        lastSeenAt: NOW,
+        snapshots: [{ capturedAt: NOW, views: 1_000, likes: 5, comments: 1 }],
+      }),
+      NOW,
+    );
+
+    expect(d.velocityReady).toBe(false);
+    expect(d.velocityViewsPerHr).toBe(0);
+  });
+
+  it("comparePosts maps each dropdown sort key to the correct derived metric", () => {
+    const low = enrichForSort(
+      post({
+        id: "low",
+        likes: 1,
+        views: 100,
+        comments: 1,
+        createTime: NOW / 1000 - 20 * 3600,
+        snapshots: [{ capturedAt: NOW - 2 * 60 * 60 * 1000, views: 90 }],
+        firstSeenAt: NOW - 2 * 60 * 60 * 1000,
+        lastSeenAt: NOW,
+      }),
+      NOW,
+    );
+    const high = enrichForSort(
+      post({
+        id: "high",
+        likes: 10,
+        views: 1_000,
+        comments: 300,
+        createTime: NOW / 1000 - 2 * 3600,
+        snapshots: [{ capturedAt: NOW - 2 * 60 * 60 * 1000, views: 100 }],
+        firstSeenAt: NOW - 2 * 60 * 60 * 1000,
+        lastSeenAt: NOW,
+      }),
+      NOW,
+    );
+
+    for (const key of ["likes", "views", "comments", "recent", "velocity", "vph", "cpr"]) {
+      expect(comparePosts(high, low, key)).toBeLessThan(0);
+    }
   });
 
   it("reels surface matches isReel posts captured via /graphql/query", () => {

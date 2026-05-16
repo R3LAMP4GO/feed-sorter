@@ -58,10 +58,24 @@ test("capture: youtube shorts permalink only keeps the current short", async () 
     )
     .toBe(1);
 
+  await expect
+    .poll(
+      async () => {
+        const [post] = await page.evaluate(() => window.fs.posts());
+        return { likes: post?.likes || 0, comments: post?.comments || 0 };
+      },
+      { timeout: 8_000, intervals: [200, 400, 800] }
+    )
+    .toEqual({ likes: 344, comments: 10 });
+
   const posts = await page.evaluate(() => window.fs.posts());
   expect(posts[0].nativeId).toBe(currentId);
   expect(posts[0].platform).toBe("youtube");
   expect(posts[0].surface).toBe("shorts-feed");
+  expect(posts[0].views).toBeGreaterThanOrEqual(13900);
+
+  await expect(page.locator(".fs-row").first()).toContainText("short");
+  await expect(page.locator(".fs-row").first()).not.toContainText("reel");
 
   await page.close();
 });
@@ -104,7 +118,13 @@ test("capture: startCollect on /shorts/<id> accumulates shorts visited by collec
   const finalPosts = await page.evaluate(() => window.fs.posts());
   expect(finalPosts.length).toBeGreaterThan(initialPosts.length);
   expect(finalPosts.every((p) => String(p.id).startsWith("yt_"))).toBe(true);
+  expect(finalPosts.every((p) => p.platform === "youtube")).toBe(true);
   expect(new Set(finalPosts.map((p) => p.nativeId)).size).toBe(finalPosts.length);
+  expect(finalPosts.some((p) => p.likes >= 345 && p.comments >= 11)).toBe(true);
+
+  const rowText = await page.locator(".fs-row").first().textContent();
+  expect(rowText).toContain("short");
+  expect(rowText).not.toContain("reel");
 
   // Stop cleanly so afterAll() can shut down without a hung loop.
   await page.evaluate(() => window.fs.stop());

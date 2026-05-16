@@ -228,6 +228,7 @@
   if (PLATFORM.platform === "youtube") {
     const onYouTubeNavigate = () => setTimeout(() => {
       try { window.dispatchEvent(new Event("feed-sorter:locationchange")); } catch {}
+      try { hydrateVisibleYouTubeShortFromDom("yt-navigate"); } catch {}
     }, 0);
     window.addEventListener("yt-navigate", onYouTubeNavigate);
     window.addEventListener("yt-navigate-finish", onYouTubeNavigate);
@@ -257,6 +258,144 @@
   const pickAuthor = (prevAuthor, nextAuthor) =>
     authorMergeScore(nextAuthor) >= authorMergeScore(prevAuthor) ? (nextAuthor || prevAuthor || "") : (prevAuthor || nextAuthor || "");
   const canonicalNativeId = (post) => String(post?.nativeId || post?.shortcode || post?.id || "").replace(/^(ig|tt|yt)_/, "");
+  const isYouTubePost = (post) => post?.platform === "youtube" || /^yt_/.test(String(post?.id || ""));
+  const COUNT_TOKEN_RE = /(\d[\d,.\s]*\d|\d)(?:\s*([kmb]|thousand|million|billion))?/i;
+  const suffixToMultiplier = (suffix) => {
+    const s = String(suffix || "").toLowerCase();
+    if (s === "k" || s === "thousand") return 1_000;
+    if (s === "m" || s === "million") return 1_000_000;
+    if (s === "b" || s === "billion") return 1_000_000_000;
+    return 1;
+  };
+  const parseHumanCount = (value) => {
+    const raw = String(value || "").replace(/\u00a0/g, " ").trim();
+    if (!/\d/.test(raw)) return 0;
+    const match = raw.match(COUNT_TOKEN_RE);
+    if (!match) return 0;
+    let token = String(match[1] || "").replace(/\s+/g, "");
+    const hasSuffix = !!match[2];
+    const hasComma = token.includes(",");
+    const hasDot = token.includes(".");
+    if (hasComma && hasDot) {
+      const lastComma = token.lastIndexOf(",");
+      const lastDot = token.lastIndexOf(".");
+      const decimalSep = lastComma > lastDot ? "," : ".";
+      const decimalDigits = token.length - Math.max(lastComma, lastDot) - 1;
+      if (!hasSuffix && decimalDigits === 3) token = token.replace(/[,.]/g, "");
+      else if (decimalSep === ",") token = token.replace(/\./g, "").replace(",", ".");
+      else token = token.replace(/,/g, "");
+    } else if (hasComma || hasDot) {
+      const sep = hasComma ? "," : ".";
+      const parts = token.split(sep);
+      const last = parts[parts.length - 1] || "";
+      token = (parts.length > 2 || last.length === 3) ? parts.join("") : parts.join(".");
+    }
+    const base = Number(token);
+    return Number.isFinite(base) ? Math.round(base * suffixToMultiplier(match[2])) : 0;
+  };
+  const activeYouTubeShortRoot = (doc = document) => {
+    if (PLATFORM.platform !== "youtube" || !doc?.querySelector) return null;
+    return doc.querySelector("ytd-reel-video-renderer[is-active]") ||
+      doc.querySelector("ytd-reel-video-renderer[is-active='true']") ||
+      doc.querySelector("ytd-shorts ytd-reel-video-renderer") ||
+      doc.querySelector("ytd-reel-video-renderer");
+  };
+  const textPartsForElement = (el) => {
+    if (!el) return [];
+    const parts = [];
+    const add = (v) => { if (v) parts.push(String(v)); };
+    add(el.getAttribute?.("aria-label"));
+    add(el.getAttribute?.("title"));
+    add(el.getAttribute?.("aria-description"));
+    add(el.textContent);
+    const button = el.closest?.("button,[role='button']");
+    if (button && button !== el) {
+      add(button.getAttribute?.("aria-label"));
+      add(button.getAttribute?.("title"));
+      add(button.textContent);
+    }
+    return parts;
+  };
+  const metricFromElements = (root, selectors, keywordRe, excludeRe) => {
+    if (!root?.querySelectorAll) return 0;
+    const nodes = [];
+    for (const selector of selectors) {
+      try { root.querySelectorAll(selector).forEach((node) => nodes.push(node)); } catch {}
+    }
+    let out = 0;
+    for (const node of nodes) {
+      const idClass = `${node.id || ""} ${node.className || ""}`;
+      const parts = textPartsForElement(node);
+      const haystack = `${idClass} ${parts.join(" ")}`;
+      if (excludeRe && excludeRe.test(haystack)) continue;
+      if (!keywordRe.test(haystack)) continue;
+      for (const part of parts) out = Math.max(out, parseHumanCount(part));
+    }
+    return out;
+  };
+  const scrapeYouTubeShortMetricsFromDom = (doc = document) => {
+    const root = activeYouTubeShortRoot(doc);
+    if (!root) return { likes: 0, comments: 0, views: 0 };
+    return {
+      likes: metricFromElements(root, [
+        "#like-button",
+        "#like-button button",
+        "like-button-view-model",
+        "like-button-view-model button",
+        "segmented-like-dislike-button-view-model button",
+        "button[aria-label*='Like' i]",
+        "[aria-label*='Like this video' i]",
+      ], /\blikes?\b|like-button|like this video|other people/i, /\bdislike\b/i),
+      comments: metricFromElements(root, [
+        "#comments-button",
+        "#comments-button button",
+        "ytd-button-renderer#comments-button",
+        "ytd-button-renderer#comments-button button",
+        "button[aria-label*='comment' i]",
+        "[aria-label*='comment' i]",
+      ], /\bcomments?\b|comments-button/i),
+      views: metricFromElements(root, [
+        "[aria-label*='view' i]",
+        "[title*='view' i]",
+        "#metadata-line span",
+      ], /\bviews?\b/i),
+    };
+  };
+  const hydrateVisibleYouTubeShortFromDom = (reason = "") => {
+    if (PLATFORM.platform !== "youtube" || pageScope.kind !== "shorts-feed") return 0;
+    const nativeId = pageScope.videoId || deriveScope().videoId;
+    if (!nativeId) return 0;
+    const id = `yt_${nativeId}`;
+    const prev = posts.get(id);
+    if (!prev) return 0;
+    const metrics = scrapeYouTubeShortMetricsFromDom();
+    const patch = {
+      platform: "youtube",
+      surface: "shorts-feed",
+      isReel: true,
+      nativeId: prev.nativeId || nativeId,
+      shortcode: prev.shortcode || nativeId,
+    };
+    if (metrics.likes > (prev.likes || 0)) patch.likes = metrics.likes;
+    if (metrics.comments > (prev.comments || 0)) patch.comments = metrics.comments;
+    if (metrics.views > (prev.views || 0)) patch.views = metrics.views;
+    const changed = Object.entries(patch).some(([key, value]) => prev[key] !== value);
+    if (!changed) return 0;
+    const merged = { ...prev, ...patch, lastSeenAt: Date.now() };
+    posts.set(id, merged);
+    sessionIds.add(id);
+    if (window.__fsStore) {
+      window.__fsStore.bulkUpsert([merged])
+        .then((rows) => {
+          const canonical = rows && rows[0];
+          if (canonical?.id) posts.set(canonical.id, { ...posts.get(canonical.id), ...canonical });
+        })
+        .catch((e) => logWarn("youtube.dom-hydrate.store.fail", e, { id }));
+    }
+    logInfo("youtube.dom-hydrate", { id, reason, likes: merged.likes || 0, comments: merged.comments || 0, views: merged.views || 0 });
+    render();
+    return 1;
+  };
   const isCurrentDetailVideo = (post) => {
     if (!pageScope.videoId) return true;
     const native = canonicalNativeId(post);
@@ -363,6 +502,8 @@
           cover: prev.cover || p.cover,
           author: pickAuthor(prev.author, p.author),
           videoUrl: p.videoUrl || prev.videoUrl,
+          platform: isYouTubePost(prev) || isYouTubePost(p) ? "youtube" : (p.platform || prev.platform),
+          surface: isYouTubePost(prev) || isYouTubePost(p) ? "shorts-feed" : (p.surface || prev.surface),
           // Preserve snapshots; canonical update arrives via the IDB callback below.
           snapshots: prev.snapshots || [],
           firstSeenAt: prev.firstSeenAt || now,
@@ -371,6 +512,8 @@
       } else {
         merged = {
           ...p,
+          platform: isYouTubePost(p) ? "youtube" : p.platform,
+          surface: isYouTubePost(p) ? "shorts-feed" : p.surface,
           snapshots: [{ capturedAt: now, views: p.views || 0, likes: p.likes || 0, comments: p.comments || 0 }],
           firstSeenAt: now,
           lastSeenAt: now,
@@ -428,7 +571,10 @@
         })
         .catch((e) => logError("store.upsert.fail", e));
     }
-    if (items.length) render();
+    if (items.length) {
+      if (PLATFORM.platform === "youtube") hydrateVisibleYouTubeShortFromDom("ingest");
+      render();
+    }
     return added;
   };
 
@@ -907,6 +1053,7 @@
       const advanced = strategy.advance({ doc: document });
       scrolls++;
       await sleep(STEP_MS);
+      if (strategy.kind === "snap" && PLATFORM.platform === "youtube") hydrateVisibleYouTubeShortFromDom("collect-step");
       if (strategy.kind === "snap" || scrolls <= 3 || scrolls % 5 === 0) {
         logInfo("collect.step", {
           scrolls,
@@ -6850,7 +6997,7 @@
     // to one creator. Fall through to the format tag (reel / post) instead.
     const tag = (p.surface === "explore" && pageScope.kind !== "profile")
       ? " · explore"
-      : p.platform === "youtube" ? " · short"
+      : isYouTubePost(p) ? " · short"
         : p.isReel ? " · reel" : "";
     const rising = p.accelerating ? `<span class="fs-rising" title="Recent velocity > 1.5× average">🔥 RISING</span>` : "";
     const who = p.author ? `@${escHTML(p.author)}` : "(unknown)";
@@ -7716,7 +7863,8 @@
       if (state.scope !== "alltime" && !isCurrentDetailVideo(p)) continue;
       // Don't blow away records we already merged in this session.
       if (!posts.has(p.id)) {
-        posts.set(p.id, p);
+        const normalized = isYouTubePost(p) ? { ...p, platform: "youtube", surface: "shorts-feed" } : p;
+        posts.set(p.id, normalized);
         kept++;
       }
     }

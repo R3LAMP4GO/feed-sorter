@@ -71,9 +71,9 @@ export default function ConnectPage() {
 
   function connect() {
     setError(null);
-    const token = readCookie('session');
+    const token = readCookie('session') ?? window.localStorage.getItem('fs.session.token');
     if (!token) {
-      setError('No session cookie found. Sign in first.');
+      setError('No session found. Sign in first, then reopen this page in the same browser profile as the extension.');
       return;
     }
     const replyTo = 'connect-' + Math.random().toString(36).slice(2);

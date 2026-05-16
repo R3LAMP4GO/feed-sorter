@@ -39,6 +39,7 @@ function CallbackInner() {
         if (json.token) {
           // Mirror cookie into web app's session cookie (same origin or via parent domain)
           document.cookie = `session=${json.token}; Path=/; Max-Age=${60 * 60 * 24 * 30}; SameSite=Lax`;
+          window.localStorage.setItem('fs.session.token', json.token);
           // Hand the token off to the extension if installed. The web-bridge
           // content script (src/lib/web-bridge-runtime.js) listens for this.
           window.postMessage(
