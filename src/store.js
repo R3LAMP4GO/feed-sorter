@@ -253,6 +253,18 @@
 
   // Same merge rules as content.js ingest(); kept here so we can do an
   // async-safe read-modify-write inside a single IDB transaction.
+  const authorMergeScore = (value) => {
+    const a = String(value || "").trim();
+    if (!a) return 0;
+    let score = 1;
+    if (/^[A-Za-z0-9._-]+$/.test(a) && !/\s/.test(a)) score += 1;
+    if (/[_.-]/.test(a)) score += 1;
+    return score;
+  };
+
+  const pickAuthor = (prevAuthor, nextAuthor) =>
+    authorMergeScore(nextAuthor) >= authorMergeScore(prevAuthor) ? (nextAuthor || prevAuthor || "") : (prevAuthor || nextAuthor || "");
+
   const mergePosts = (prev, next, now) => {
     const mergedViews = Math.max(prev?.views || 0, next.views || 0);
     const mergedLikes = Math.max(prev?.likes || 0, next.likes || 0);
@@ -286,7 +298,7 @@
       views: mergedViews,
       desc: next.desc || prev.desc,
       cover: prev.cover || next.cover,
-      author: next.author || prev.author,
+      author: pickAuthor(prev.author, next.author),
       videoUrl: next.videoUrl || prev.videoUrl,
       // Preserve transcript across re-ingests (ingest never carries it).
       transcript: next.transcript || prev.transcript || "",
@@ -359,8 +371,8 @@
     if (scope.kind === "profile" && scope.username) {
       return getByAuthor(scope.username);
     }
-    if (scope.kind === "explore") {
-      // Explore is multi-author; show items seen in this session window
+    if (scope.kind === "explore" || scope.kind === "shorts-feed" || scope.kind === "search") {
+      // Multi-author discovery surfaces: show items seen in this session window
       // (last 24h is a reasonable "recent" cutoff for rehydrate-on-revisit).
       return getRecent(Date.now() - 24 * 60 * 60 * 1000);
     }

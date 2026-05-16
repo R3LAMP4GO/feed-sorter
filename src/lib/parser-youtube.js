@@ -9,9 +9,229 @@
 // runtime IIFE mirror alike.
 
 const ID_PREFIX = 'yt_';
+const SHORTS_ID_RE = /\/shorts\/([A-Za-z0-9_-]{6,})/;
+const WATCH_ID_RE = /[?&]v=([A-Za-z0-9_-]{6,})/;
+const ENTITY_ID_RE = /^shorts(?:-shelf-item|-grid-item|-lockup)?-([A-Za-z0-9_-]{6,})$/i;
+const COUNT_RE = /(\d[\d,.\s]*\d|\d)(?:\s*([kmb]|thousand|million|billion))?/i;
+const HANDLE_RE = /\/@([^/?#]+)/;
+const YOUTUBE_ENDPOINT_SURFACES = Object.freeze({
+  browse: 'shorts-feed',
+  player: 'player',
+  next: 'next',
+  reel_item_watch: 'next',
+  reel_watch_sequence: 'shorts-feed',
+});
 
 const num = (v) => (typeof v === 'number' ? v : Number(v) || 0);
 const str = (v) => (v == null ? '' : String(v));
+
+const textFrom = (value) => {
+  if (value == null) return '';
+  if (typeof value === 'string' || typeof value === 'number') return str(value);
+  if (Array.isArray(value)) return value.map((v) => textFrom(v)).join('');
+  if (typeof value !== 'object') return '';
+  if (typeof value.simpleText === 'string') return value.simpleText;
+  if (Array.isArray(value.runs)) {
+    return value.runs.map((r) => str(r?.text ?? r?.content ?? '')).join('');
+  }
+  if (typeof value.content === 'string') return value.content;
+  if (typeof value.text === 'string') return value.text;
+  if (typeof value.accessibilityText === 'string') return value.accessibilityText;
+  if (typeof value.label === 'string') return value.label;
+  const accessibilityLabel =
+    value.accessibility?.accessibilityData?.label ||
+    value.accessibilityData?.label ||
+    value.accessibility?.label;
+  return str(accessibilityLabel);
+};
+
+const firstText = (...values) => {
+  for (const value of values) {
+    const text = textFrom(value).trim();
+    if (text) return text;
+  }
+  return '';
+};
+
+function firstHandleFrom(value) {
+  const raw = textFrom(value) || str(value);
+  const match = raw.match(HANDLE_RE);
+  return match ? cleanAuthor(match[1]) : '';
+}
+
+function suffixMultiplier(suffix) {
+  const s = String(suffix || '').toLowerCase();
+  if (s === 'k' || s === 'thousand') return 1_000;
+  if (s === 'm' || s === 'million') return 1_000_000;
+  if (s === 'b' || s === 'billion') return 1_000_000_000;
+  return 1;
+}
+
+function normalizeCountToken(token, hasSuffix) {
+  let value = String(token || '').replace(/\s+/g, '');
+  if (!value) return '';
+
+  const hasComma = value.includes(',');
+  const hasDot = value.includes('.');
+  if (hasComma && hasDot) {
+    const lastComma = value.lastIndexOf(',');
+    const lastDot = value.lastIndexOf('.');
+    const decimalSep = lastComma > lastDot ? ',' : '.';
+    const decimalDigits = value.length - Math.max(lastComma, lastDot) - 1;
+    if (!hasSuffix && decimalDigits === 3) return value.replace(/[,.]/g, '');
+    if (decimalSep === ',') return value.replace(/\./g, '').replace(',', '.');
+    return value.replace(/,/g, '');
+  }
+
+  if (hasComma || hasDot) {
+    const sep = hasComma ? ',' : '.';
+    const parts = value.split(sep);
+    const last = parts[parts.length - 1] || '';
+    const looksGrouped = parts.length > 2 || last.length === 3;
+    value = looksGrouped ? parts.join('') : parts.join('.');
+  }
+  return value;
+}
+
+function parseLooseNumber(value) {
+  const raw = (textFrom(value) || str(value)).replace(/\u00a0/g, ' ').trim();
+  if (!/\d/.test(raw)) return 0;
+  const match = raw.match(COUNT_RE);
+  if (!match) return 0;
+  const normalized = normalizeCountToken(match[1], !!match[2]);
+  const base = Number(normalized);
+  if (!Number.isFinite(base)) return 0;
+  return Math.round(base * suffixMultiplier(match[2]));
+}
+
+function parseDurationSeconds(value) {
+  const raw = textFrom(value).trim();
+  const match = raw.match(/\b(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\b/);
+  if (match) {
+    const hours = Number(match[1] || 0);
+    const minutes = Number(match[2] || 0);
+    const seconds = Number(match[3] || 0);
+    return (hours * 3600) + (minutes * 60) + seconds;
+  }
+  return parseLooseNumber(raw);
+}
+
+function parseDateSeconds(value) {
+  const raw = textFrom(value).trim();
+  if (!raw) return 0;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
+}
+
+function extractVideoIdFromString(value) {
+  const raw = str(value).trim();
+  if (!raw) return '';
+  const entity = raw.match(ENTITY_ID_RE);
+  if (entity) return entity[1];
+  const shorts = raw.match(SHORTS_ID_RE);
+  if (shorts) return shorts[1];
+  const watch = raw.match(WATCH_ID_RE);
+  if (watch) return watch[1];
+  if (/^[A-Za-z0-9_-]{6,}$/.test(raw)) return raw;
+  return '';
+}
+
+function firstVideoId(...values) {
+  for (const value of values) {
+    const id = extractVideoIdFromString(value);
+    if (id) return id;
+  }
+  return '';
+}
+
+function videoIdFromObject(value) {
+  if (!value || typeof value !== 'object') return extractVideoIdFromString(value);
+  return firstVideoId(
+    value.videoId,
+    value.video_id,
+    value.reelWatchEndpoint?.videoId,
+    value.watchEndpoint?.videoId,
+    value.currentVideoEndpoint?.reelWatchEndpoint?.videoId,
+    value.currentVideoEndpoint?.watchEndpoint?.videoId,
+    value.onTap?.innertubeCommand?.reelWatchEndpoint?.videoId,
+    value.onTap?.innertubeCommand?.watchEndpoint?.videoId,
+    value.navigationEndpoint?.reelWatchEndpoint?.videoId,
+    value.navigationEndpoint?.watchEndpoint?.videoId,
+    value.onTapCommand?.innertubeCommand?.reelWatchEndpoint?.videoId,
+    value.onTapCommand?.innertubeCommand?.watchEndpoint?.videoId,
+    value.command?.reelWatchEndpoint?.videoId,
+    value.command?.watchEndpoint?.videoId,
+    value.endpoint?.reelWatchEndpoint?.videoId,
+    value.endpoint?.watchEndpoint?.videoId,
+    value.inlinePlayerData?.onVisible?.innertubeCommand?.reelWatchEndpoint?.videoId,
+    value.inlinePlayerData?.onVisible?.innertubeCommand?.watchEndpoint?.videoId,
+    value.entityId,
+    value.videoDetails?.videoId,
+    value.commandMetadata?.webCommandMetadata?.url,
+    value.onTap?.innertubeCommand?.commandMetadata?.webCommandMetadata?.url,
+    value.navigationEndpoint?.commandMetadata?.webCommandMetadata?.url,
+    value.url,
+    value.canonicalBaseUrl,
+  );
+}
+
+function currentVideoIdFromObject(value) {
+  if (!value || typeof value !== 'object') return '';
+  return firstVideoId(
+    value.currentVideoEndpoint?.reelWatchEndpoint?.videoId,
+    value.currentVideoEndpoint?.watchEndpoint?.videoId,
+    value.videoId,
+    value.video_id,
+    value.videoDetails?.videoId,
+    value.playerResponse?.videoDetails?.videoId,
+    value.currentVideoEndpoint?.commandMetadata?.webCommandMetadata?.url,
+    value.navigationEndpoint?.reelWatchEndpoint?.videoId,
+    value.endpoint?.reelWatchEndpoint?.videoId,
+  );
+}
+
+function cleanAuthor(value) {
+  return str(value).replace(/^@/, '').trim().toLowerCase();
+}
+
+function thumbnailUrlOf(value) {
+  if (!value || typeof value !== 'object') return '';
+  const arrays = [
+    value.thumbnail?.thumbnails,
+    value.thumbnail?.sources,
+    value.thumbnailViewModel?.image?.sources,
+    value.image?.sources,
+    value.richThumbnail?.movingThumbnailRenderer?.movingThumbnailDetails?.thumbnails,
+  ];
+  for (const arr of arrays) {
+    if (!Array.isArray(arr) || arr.length === 0) continue;
+    const found = arr.map((t) => str(t?.url ?? t?.src)).filter(Boolean).pop();
+    if (found) return found;
+  }
+  return str(value.thumbnail?.url ?? value.thumbnailUrl ?? '');
+}
+
+function maxCountForKeyword(root, keywordRe, maxDepth = 4) {
+  let out = 0;
+  const stack = [{ value: root, depth: 0 }];
+  const seen = new WeakSet();
+  while (stack.length) {
+    const { value, depth } = stack.pop();
+    if (value == null) continue;
+    const text = textFrom(value);
+    if (text && keywordRe.test(text) && /\d/.test(text)) {
+      out = Math.max(out, parseLooseNumber(text));
+    }
+    if (typeof value !== 'object' || depth >= maxDepth || seen.has(value)) continue;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) stack.push({ value: item, depth: depth + 1 });
+    } else {
+      for (const key in value) stack.push({ value: value[key], depth: depth + 1 });
+    }
+  }
+  return out;
+}
 
 // --- /youtubei/v1/player ----------------------------------------------------
 //
@@ -50,13 +270,15 @@ export const pickCaptionTrack = (tracks, preferredLang = 'en') => {
 };
 
 export const videoUrlOfPlayer = (player) => {
-  const adaptive = player?.streamingData?.adaptiveFormats;
-  if (Array.isArray(adaptive)) {
-    // Prefer mp4 video+audio combined, smallest size that's still video.
-    const mp4Combined = player?.streamingData?.formats?.find?.(
+  const formats = player?.streamingData?.formats;
+  if (Array.isArray(formats)) {
+    const mp4Combined = formats.find(
       (f) => typeof f?.url === 'string' && /video\/mp4/i.test(f?.mimeType ?? ''),
     );
     if (mp4Combined?.url) return mp4Combined.url;
+  }
+  const adaptive = player?.streamingData?.adaptiveFormats;
+  if (Array.isArray(adaptive)) {
     const anyVideo = adaptive.find(
       (f) => typeof f?.url === 'string' && /video\/mp4/i.test(f?.mimeType ?? ''),
     );
@@ -67,24 +289,25 @@ export const videoUrlOfPlayer = (player) => {
 
 export const playerToPost = (player, pageScope = { kind: 'other', username: null }) => {
   const vd = player?.videoDetails ?? {};
+  const micro = player?.microformat?.playerMicroformatRenderer ?? {};
   const nativeId = str(vd.videoId);
   if (!nativeId) return null;
-  const id = ID_PREFIX + nativeId;
-  const handle = pageScope.username ?? str(vd.author).replace(/^@/, '').toLowerCase();
-  const cover = vd?.thumbnail?.thumbnails?.slice?.(-1)?.[0]?.url ?? '';
+  const ownerHandle = firstHandleFrom(micro.ownerProfileUrl);
+  const handle = cleanAuthor(ownerHandle || vd.author || micro.ownerChannelName);
+  const cover = thumbnailUrlOf(vd) || thumbnailUrlOf(micro);
   const surface = pageScope.kind === 'shorts-feed' ? 'shorts-feed' : pageScope.kind;
   return {
-    id,
+    id: ID_PREFIX + nativeId,
     nativeId,
     shortcode: nativeId,
     author: handle,
-    channelId: str(vd.channelId),
-    desc: str(vd.shortDescription ?? vd.title ?? ''),
-    title: str(vd.title),
-    createTime: 0, // YouTube /player doesn't include uploadDate; needs /next or microformat
+    channelId: str(vd.channelId || micro.externalChannelId),
+    desc: str(vd.shortDescription ?? vd.title ?? micro.description?.simpleText ?? ''),
+    title: str(vd.title || textFrom(micro.title)),
+    createTime: parseDateSeconds(micro.publishDate || micro.uploadDate),
     likes: 0,
     comments: 0,
-    views: num(vd.viewCount),
+    views: Math.max(parseLooseNumber(vd.viewCount), parseLooseNumber(micro.viewCount)),
     shares: 0,
     saves: 0,
     durationSec: num(vd.lengthSeconds),
@@ -110,48 +333,180 @@ export const playerToPost = (player, pageScope = { kind: 'other', username: null
 // --- /youtubei/v1/next ------------------------------------------------------
 //
 // Used to get likes/comments + uploadDate. Response is deeply nested; we walk
-// for `likeButtonRenderer` / `dateText` / `viewCount` siblings.
+// for `likeButtonRenderer` / modern `likeButtonViewModel` / `dateText` /
+// `viewCount` siblings.
 
-// Requires at least one digit; allows surrounding/separating commas/dots/whitespace.
-// Without the leading `\d` anchor, the regex would happily match a single space
-// (since `\s` is in the character class) e.g. on labels like
-// "like this video along with 89,432 other people".
-const VIEW_COUNT_RE = /(\d[\d,.\s]*)\s*(views?|view)?/i;
-const LIKE_RE = /(\d[\d,.\s]*)/;
+function likeCountFromObject(value) {
+  if (!value || typeof value !== 'object') return 0;
+  const likeCountEntity = value.likeCountEntity || value.likeButtonViewModel?.likeCountEntity || value.likeButtonViewModel?.likeButtonViewModel?.likeCountEntity;
+  let out = Math.max(
+    parseLooseNumber(value.likeCount),
+    parseLooseNumber(value.likeCountText),
+    parseLooseNumber(value.shortLikeCount),
+    parseLooseNumber(value.shortLikeCountText),
+    parseLooseNumber(value.likeButtonViewModel?.likeCount),
+    parseLooseNumber(value.likeButtonViewModel?.likeButtonViewModel?.likeCount),
+    parseLooseNumber(likeCountEntity?.likeCountIfIndifferent),
+    parseLooseNumber(likeCountEntity?.likeCountIfDisliked),
+    parseLooseNumber(likeCountEntity?.expandedLikeCountIfIndifferent),
+    parseLooseNumber(likeCountEntity?.expandedLikeCountIfDisliked),
+    parseLooseNumber(likeCountEntity?.likeCountIfLiked),
+    parseLooseNumber(likeCountEntity?.expandedLikeCountIfLiked),
+  );
+
+  const renderer = value.toggleButtonRenderer || value.likeButtonRenderer;
+  if (renderer) {
+    out = Math.max(
+      out,
+      parseLooseNumber(renderer.defaultText),
+      parseLooseNumber(renderer.toggledText),
+      parseLooseNumber(renderer.accessibility),
+      parseLooseNumber(renderer.accessibilityData),
+      parseLooseNumber(renderer.title),
+      parseLooseNumber(renderer.tooltip),
+    );
+  }
+
+  const label = firstText(
+    value.accessibilityText,
+    value.accessibility?.accessibilityData?.label,
+    value.accessibilityData?.label,
+    value.buttonViewModel?.accessibilityText,
+    value.buttonViewModel?.title,
+    value.defaultButtonViewModel?.buttonViewModel?.accessibilityText,
+    value.defaultButtonViewModel?.buttonViewModel?.title,
+    value.likeButtonViewModel?.likeCount,
+    value.likeButtonViewModel?.accessibilityText,
+    value.likeButtonViewModel?.buttonViewModel?.accessibilityText,
+    value.likeButtonViewModel?.buttonViewModel?.title,
+    value.likeButtonViewModel?.defaultButtonViewModel?.buttonViewModel?.accessibilityText,
+    value.likeButtonViewModel?.defaultButtonViewModel?.buttonViewModel?.title,
+  );
+  if (label && !/\bdislike\b/i.test(label) && (/\blikes?\b/i.test(label) || /other people/i.test(label))) {
+    out = Math.max(out, parseLooseNumber(label));
+  }
+  return out;
+}
+
+function viewCountFromObject(value) {
+  if (!value || typeof value !== 'object') return 0;
+  let out = Math.max(
+    parseLooseNumber(value.viewCount),
+    parseLooseNumber(value.viewCountText),
+    parseLooseNumber(value.shortViewCount),
+    parseLooseNumber(value.shortViewCountText),
+  );
+  const label = firstText(
+    value.accessibilityText,
+    value.accessibility?.accessibilityData?.label,
+    value.accessibilityData?.label,
+  );
+  if (label && /\bviews?\b/i.test(label)) out = Math.max(out, parseLooseNumber(label));
+  return out;
+}
+
+function commentCountFromObject(value) {
+  if (!value || typeof value !== 'object') return 0;
+  const commentButton = value.commentButton || value.commentsButton;
+  const commentButtonRenderer = commentButton?.buttonRenderer || value.commentButtonRenderer || value.commentsButtonRenderer;
+  const commentButtonViewModel = commentButton?.buttonViewModel || value.commentButtonViewModel || value.commentsButtonViewModel;
+  let out = Math.max(
+    parseLooseNumber(value.commentCount),
+    parseLooseNumber(value.commentCountText),
+    parseLooseNumber(value.commentsCount),
+    parseLooseNumber(value.commentsCountText),
+    parseLooseNumber(value.commentButtonViewModel?.commentCount),
+    parseLooseNumber(value.commentsButtonViewModel?.commentCount),
+    parseLooseNumber(value.commentCountEntity?.commentCount),
+    parseLooseNumber(value.commentsEntryPointHeaderRenderer?.commentCount),
+    parseLooseNumber(commentButtonRenderer?.text),
+    parseLooseNumber(commentButtonRenderer?.title),
+    parseLooseNumber(commentButtonViewModel?.title),
+    parseLooseNumber(commentButtonViewModel?.commentCount),
+  );
+  const label = firstText(
+    value.contextualInfo,
+    value.accessibilityText,
+    value.accessibility?.accessibilityData?.label,
+    value.accessibilityData?.label,
+    value.buttonViewModel?.accessibilityText,
+    value.buttonViewModel?.title,
+    value.buttonRenderer?.accessibility?.accessibilityData?.label,
+    value.buttonRenderer?.accessibilityData?.label,
+    value.commentButtonViewModel?.accessibilityText,
+    value.commentsButtonViewModel?.accessibilityText,
+    commentButtonRenderer?.accessibility?.accessibilityData?.label,
+    commentButtonRenderer?.accessibilityData?.label,
+    commentButtonViewModel?.accessibilityText,
+  );
+  if (label && /\bcomments?\b/i.test(label)) out = Math.max(out, parseLooseNumber(label));
+  return out;
+}
+
+function dateFromObject(value) {
+  if (!value || typeof value !== 'object') return 0;
+  return Math.max(
+    parseDateSeconds(value.dateText),
+    parseDateSeconds(value.publishedTimeText),
+    parseDateSeconds(value.publishDate),
+    parseDateSeconds(value.uploadDate),
+    parseDateSeconds(value.microformat?.playerMicroformatRenderer?.publishDate),
+    parseDateSeconds(value.microformat?.playerMicroformatRenderer?.uploadDate),
+  );
+}
 
 export const enrichFromNext = (next) => {
   const out = { likes: 0, views: 0, comments: 0, uploadedAt: 0 };
   const stack = [next];
   const seen = new WeakSet();
   while (stack.length) {
-    const v = stack.pop();
-    if (!v || typeof v !== 'object' || seen.has(v)) continue;
-    seen.add(v);
+    const value = stack.pop();
+    if (!value || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
 
-    const lbr = v.toggleButtonRenderer || v.likeButtonRenderer;
-    if (lbr?.defaultText?.accessibility?.accessibilityData?.label) {
-      const m = String(lbr.defaultText.accessibility.accessibilityData.label).match(LIKE_RE);
-      if (m) out.likes = parseLooseNumber(m[1]);
+    if (!out.videoId) {
+      const currentVideoId = currentVideoIdFromObject(value);
+      if (currentVideoId) out.videoId = currentVideoId;
     }
-    if (v.viewCount?.simpleText) {
-      const m = String(v.viewCount.simpleText).match(VIEW_COUNT_RE);
-      if (m) out.views = parseLooseNumber(m[1]);
+    if (!out.author) {
+      const foundAuthor = firstAuthorFromObject(value);
+      if (foundAuthor) out.author = foundAuthor;
     }
-    if (v.dateText?.simpleText) {
-      const t = Date.parse(String(v.dateText.simpleText));
-      if (Number.isFinite(t)) out.uploadedAt = Math.floor(t / 1000);
-    }
+    out.likes = Math.max(out.likes, likeCountFromObject(value));
+    out.views = Math.max(out.views, viewCountFromObject(value));
+    out.comments = Math.max(out.comments, commentCountFromObject(value));
+    if (!out.uploadedAt) out.uploadedAt = dateFromObject(value);
 
-    if (Array.isArray(v)) for (const x of v) stack.push(x);
-    else for (const k in v) stack.push(v[k]);
+    if (Array.isArray(value)) for (const item of value) stack.push(item);
+    else for (const key in value) stack.push(value[key]);
   }
   return out;
 };
 
-function parseLooseNumber(s) {
-  const cleaned = String(s).replace(/[,\s]/g, '');
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : 0;
+function firstAuthorFromObject(value) {
+  if (!value || typeof value !== 'object') return '';
+  return cleanAuthor(
+    firstHandleFrom(value.ownerProfileUrl) ||
+    firstHandleFrom(value.canonicalBaseUrl) ||
+    firstHandleFrom(value.navigationEndpoint?.commandMetadata?.webCommandMetadata?.url) ||
+    firstHandleFrom(value.endpoint?.commandMetadata?.webCommandMetadata?.url) ||
+    firstHandleFrom(value.commandMetadata?.webCommandMetadata?.url) ||
+    firstHandleFrom(value.shortBylineText?.runs?.[0]?.navigationEndpoint?.commandMetadata?.webCommandMetadata?.url) ||
+    firstHandleFrom(value.ownerText?.runs?.[0]?.navigationEndpoint?.commandMetadata?.webCommandMetadata?.url) ||
+    firstHandleFrom(value.longBylineText?.runs?.[0]?.navigationEndpoint?.commandMetadata?.webCommandMetadata?.url) ||
+    firstText(
+      value.ownerText,
+      value.shortBylineText,
+      value.longBylineText,
+      value.byline,
+      value.channelName,
+      value.ownerChannelName,
+      value.metadata?.channelName,
+      value.author,
+      value.videoDetails?.author,
+      value.playerResponse?.videoDetails?.author,
+    )
+  );
 }
 
 // --- Caption track parsing (XML transcript → text) --------------------------
@@ -212,44 +567,117 @@ function decodeXmlEntities(s) {
 
 // --- /youtubei/v1/browse (Shorts shelf or channel feed) ---------------------
 //
-// Best-effort harvest: looks for any object that has `videoId` + view/title
-// fields, returns a partial post per match. Used for batch capture; full
-// metric enrichment happens via /next + /player on click.
+// Best-effort harvest: looks for any Shorts/video lockup with a video id and
+// title/view/thumbnail fields, returns a partial post per match. Used for batch
+// capture; full metric enrichment happens via /next + /player on click.
 
 export const harvestBrowse = (root, pageScope = { kind: 'other', username: null }) => {
-  const found = [];
+  const byId = new Map();
   const seen = new WeakSet();
   const stack = [root];
   while (stack.length) {
-    const v = stack.pop();
-    if (!v || typeof v !== 'object' || seen.has(v)) continue;
-    seen.add(v);
-    if (v.videoId && (v.headline || v.title || v.shortBylineText)) {
-      found.push(v);
+    const value = stack.pop();
+    if (!value || typeof value !== 'object' || seen.has(value)) continue;
+    seen.add(value);
+
+    if (looksLikeBrowseVideo(value)) {
+      const post = browseItemToPost(value, pageScope);
+      if (post) byId.set(post.id, mergePartialPosts(byId.get(post.id), post));
       continue;
     }
-    if (Array.isArray(v)) for (const x of v) stack.push(x);
-    else for (const k in v) stack.push(v[k]);
+
+    if (Array.isArray(value)) for (const item of value) stack.push(item);
+    else for (const key in value) stack.push(value[key]);
   }
-  return found.map((it) => browseItemToPost(it, pageScope)).filter(Boolean);
+  return [...byId.values()];
 };
 
-function browseItemToPost(it, pageScope) {
-  const nativeId = str(it.videoId);
+function looksLikeBrowseVideo(value) {
+  if (!videoIdFromObject(value)) return false;
+  if (
+    value.headline ||
+    value.title ||
+    value.shortBylineText ||
+    value.ownerText ||
+    value.longBylineText ||
+    value.viewCountText ||
+    value.shortViewCountText ||
+    value.thumbnail ||
+    value.thumbnailViewModel ||
+    value.overlayMetadata ||
+    value.onTap?.innertubeCommand?.reelWatchEndpoint ||
+    value.navigationEndpoint?.reelWatchEndpoint
+  ) {
+    return true;
+  }
+  const accessibilityText = firstText(value.accessibilityText, value.accessibility?.accessibilityData?.label);
+  return /\bviews?\b/i.test(accessibilityText);
+}
+
+function titleOfBrowseItem(value) {
+  return firstText(
+    value.title,
+    value.headline,
+    value.overlayMetadata?.primaryText,
+    value.metadata?.title,
+    value.accessibilityText,
+    value.accessibility?.accessibilityData?.label,
+  ).replace(/\s+by\s+.+?\s+\d[\d,.\s]*(?:[KMB]|thousand|million|billion)?\s+views?$/i, '').trim();
+}
+
+function authorOfBrowseItem(value, pageScope) {
+  if (pageScope?.username) return cleanAuthor(pageScope.username);
+  const handle = firstHandleFrom(
+    firstText(
+      value.shortBylineText?.runs?.[0]?.navigationEndpoint?.commandMetadata?.webCommandMetadata?.url,
+      value.ownerText?.runs?.[0]?.navigationEndpoint?.commandMetadata?.webCommandMetadata?.url,
+      value.navigationEndpoint?.commandMetadata?.webCommandMetadata?.url,
+      value.onTap?.innertubeCommand?.commandMetadata?.webCommandMetadata?.url,
+      value.onTapCommand?.innertubeCommand?.commandMetadata?.webCommandMetadata?.url,
+      value.canonicalBaseUrl,
+    )
+  );
+  if (handle) return handle;
+  const byline = firstText(
+    value.shortBylineText,
+    value.ownerText,
+    value.longBylineText,
+    value.byline,
+    value.channelName,
+    value.metadata?.channelName,
+  );
+  if (byline) return cleanAuthor(byline);
+  const accessibilityText = firstText(value.accessibilityText, value.accessibility?.accessibilityData?.label);
+  const authorMatch = accessibilityText.match(/\sby\s+(.+?)\s+\d[\d,.\s]*(?:[KMB]|thousand|million|billion)?\s+views?\b/i);
+  return cleanAuthor(authorMatch?.[1] || '');
+}
+
+function viewsOfBrowseItem(value) {
+  return Math.max(
+    parseLooseNumber(value.viewCountText),
+    parseLooseNumber(value.shortViewCountText),
+    parseLooseNumber(value.overlayMetadata?.secondaryText),
+    maxCountForKeyword(value, /\bviews?\b/i, 4),
+  );
+}
+
+function browseItemToPost(value, pageScope) {
+  const nativeId = videoIdFromObject(value);
   if (!nativeId) return null;
+  const title = titleOfBrowseItem(value);
   return {
     id: ID_PREFIX + nativeId,
     nativeId,
     shortcode: nativeId,
-    author: pageScope?.username ?? '',
-    desc: str(it?.title?.simpleText ?? it?.headline?.simpleText ?? it?.title?.runs?.[0]?.text ?? ''),
-    title: str(it?.title?.simpleText ?? it?.headline?.simpleText ?? ''),
+    author: authorOfBrowseItem(value, pageScope),
+    desc: title,
+    title,
     likes: 0,
     comments: 0,
-    views: parseLooseNumber(it?.viewCountText?.simpleText ?? '0'),
-    durationSec: parseLooseNumber(it?.lengthText?.simpleText ?? '0'),
+    views: viewsOfBrowseItem(value),
+    durationSec: parseDurationSeconds(value.lengthText || value.thumbnailOverlayTimeStatusRenderer?.text),
     isReel: true,
-    cover: str(it?.thumbnail?.thumbnails?.slice?.(-1)?.[0]?.url ?? ''),
+    cover: str(thumbnailUrlOf(value)),
     videoUrl: '',
     url: `https://www.youtube.com/shorts/${nativeId}`,
     surface: pageScope?.kind ?? 'other',
@@ -258,11 +686,28 @@ function browseItemToPost(it, pageScope) {
   };
 }
 
+function mergePartialPosts(prev, next) {
+  if (!prev) return next;
+  return {
+    ...prev,
+    ...next,
+    likes: Math.max(prev.likes || 0, next.likes || 0),
+    comments: Math.max(prev.comments || 0, next.comments || 0),
+    views: Math.max(prev.views || 0, next.views || 0),
+    author: next.author || prev.author,
+    desc: next.desc || prev.desc,
+    title: next.title || prev.title,
+    cover: next.cover || prev.cover,
+    durationSec: next.durationSec || prev.durationSec || 0,
+  };
+}
+
 export const surfaceFromUrlTag = (url, tag) => {
-  if (tag === 'yt-shorts' || /\/youtubei\/v1\/browse/.test(url)) return 'shorts-feed';
-  if (tag === 'yt-player' || /\/youtubei\/v1\/player/.test(url)) return 'player';
-  if (tag === 'yt-next' || /\/youtubei\/v1\/next/.test(url)) return 'next';
-  return 'unknown';
+  if (tag === 'yt-shorts') return 'shorts-feed';
+  if (tag === 'yt-player') return 'player';
+  if (tag === 'yt-next') return 'next';
+  const endpoint = str(url).match(/\/youtubei\/v1\/(?:reel\/)?([A-Za-z0-9_]+)/)?.[1];
+  return YOUTUBE_ENDPOINT_SURFACES[endpoint] || 'unknown';
 };
 
 export const ID_PREFIX_YT = ID_PREFIX;

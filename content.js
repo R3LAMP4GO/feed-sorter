@@ -31,6 +31,10 @@
   /** @type {Set<string>} */
   const sessionIds = new Set();
 
+  // During detail-page snap collection (YT Shorts / TT video), keep posts from
+  // videos we advance onto instead of only the URL's starting video.
+  const collectionSeenVideoIds = new Set();
+
   // Per-post user metadata (pin/status/note/tags). Authoritative copy is in
   // IDB (store: meta); this Map is a hot read cache shared across scopes.
   /** @typedef {{ id: string, pinned: boolean, status: string|null,
@@ -130,6 +134,8 @@
   const PLATFORM_DOWNLOAD_FOLDER = PLATFORM.downloadFolder;
   const PLATFORM_CSV_PREFIX = PLATFORM.csvPrefix;
   const PLATFORM_SOURCE = `feed-sorter-${PLATFORM_CSV_PREFIX}`;
+  const PLATFORM_LABELS = Object.freeze({ instagram: "IG", tiktok: "TT", youtube: "YT" });
+  const PLATFORM_LABEL = PLATFORM_LABELS[PLATFORM.platform] || PLATFORM_CSV_PREFIX.toUpperCase();
 
   // -------- tier gate --------
   // Surfaces Pro-only features (transcription, Explore-page overlay). The
@@ -172,15 +178,24 @@
 
   const onScopeMaybeChanged = () => {
     const next = deriveScope();
-    if (next.kind === pageScope.kind && next.username === pageScope.username) return;
+    if (next.kind === pageScope.kind && next.username === pageScope.username && next.videoId === pageScope.videoId) return;
     const old = { ...pageScope };
+    const onlyDetailVideoChanged =
+      collector.running &&
+      old.kind === next.kind &&
+      old.username === next.username &&
+      old.videoId !== next.videoId;
     pageScope = next;
     // Don't wipe IDB. Just drop the rendered/in-memory view; we'll rehydrate
-    // for the new scope below.
-    posts.clear();
-    collector.abort = collector.running ? true : false;
+    // for the new scope below. During snap collection, changing from one
+    // short/video URL to the next is expected and must not abort the collector.
+    if (!onlyDetailVideoChanged) {
+      posts.clear();
+    }
+    if (onlyDetailVideoChanged && next.videoId) collectionSeenVideoIds.add(String(next.videoId));
+    collector.abort = collector.running && !onlyDetailVideoChanged ? true : false;
     collector.reason = null;
-    logInfo("scope.change", { from: old, to: pageScope, path: location.pathname });
+    logInfo("scope.change", { from: old, to: pageScope, path: location.pathname, collectorRunning: collector.running, onlyDetailVideoChanged });
     updateHeader();
     render();
     setStatus(pageScope.kind === "other" ? "idle (off-feed page)" : "idle");
@@ -210,6 +225,14 @@
     });
   }
   window.addEventListener("feed-sorter:locationchange", onScopeMaybeChanged);
+  if (PLATFORM.platform === "youtube") {
+    const onYouTubeNavigate = () => setTimeout(() => {
+      try { window.dispatchEvent(new Event("feed-sorter:locationchange")); } catch {}
+    }, 0);
+    window.addEventListener("yt-navigate", onYouTubeNavigate);
+    window.addEventListener("yt-navigate-finish", onYouTubeNavigate);
+    window.addEventListener("yt-page-data-updated", onYouTubeNavigate);
+  }
 
   // -------- parser: delegated to the platform config --------
   // The actual parser (looksLikeMedia / cover / toPost / harvest) lives in
@@ -223,6 +246,43 @@
     platformParser.surfaceFromTag(url || "", tag || "");
   const harvestPosts = (root, surface) =>
     platformParser.harvest(root, surface, pageScope);
+  const authorMergeScore = (value) => {
+    const a = String(value || "").trim();
+    if (!a) return 0;
+    let score = 1;
+    if (/^[A-Za-z0-9._-]+$/.test(a) && !/\s/.test(a)) score += 1;
+    if (/[_.-]/.test(a)) score += 1;
+    return score;
+  };
+  const pickAuthor = (prevAuthor, nextAuthor) =>
+    authorMergeScore(nextAuthor) >= authorMergeScore(prevAuthor) ? (nextAuthor || prevAuthor || "") : (prevAuthor || nextAuthor || "");
+  const canonicalNativeId = (post) => String(post?.nativeId || post?.shortcode || post?.id || "").replace(/^(ig|tt|yt)_/, "");
+  const isCurrentDetailVideo = (post) => {
+    if (!pageScope.videoId) return true;
+    const native = canonicalNativeId(post);
+    if (!native) return false;
+    if (native === String(pageScope.videoId)) return true;
+    return collector.running && collectionSeenVideoIds.has(native);
+  };
+  const isSingleVideoHydrationSurface = (surface) => surface === "player" || surface === "next";
+  const shouldKeepDetailVideoPost = (post, surface) => {
+    if (!pageScope.videoId) return true;
+    if (isCurrentDetailVideo(post)) return true;
+    const native = canonicalNativeId(post);
+    if (collector.running && native && isSingleVideoHydrationSurface(surface)) {
+      collectionSeenVideoIds.add(native);
+      logInfo("ingest.collector-hydration.accept", {
+        platform: PLATFORM.platform,
+        scopeVideoId: pageScope.videoId || null,
+        postNativeId: native,
+        postId: post.id || null,
+        surface,
+        path: location.pathname,
+      });
+      return true;
+    }
+    return false;
+  };
 
   // Hook = normalized first line of the caption, max 80 chars, lowercased
   // and with non-word/space chars stripped. Used to detect cross-creator
@@ -273,6 +333,18 @@
       if (!p.id) continue;
       // Scope filter
       if (pageScope.kind === "other") { droppedScope++; continue; }
+      if (!shouldKeepDetailVideoPost(p, surface)) {
+        droppedScope++;
+        logInfo("ingest.current-video.drop", {
+          platform: PLATFORM.platform,
+          scopeVideoId: pageScope.videoId || null,
+          postNativeId: canonicalNativeId(p) || null,
+          postId: p.id || null,
+          surface: p.surface || null,
+          path: location.pathname,
+        });
+        continue;
+      }
       if (pageScope.kind === "profile" && p.author && pageScope.username &&
           p.author.toLowerCase() !== pageScope.username) {
         droppedScope++;
@@ -289,7 +361,7 @@
           views: Math.max(prev.views, p.views),
           desc: p.desc || prev.desc,
           cover: prev.cover || p.cover,
-          author: p.author || prev.author,
+          author: pickAuthor(prev.author, p.author),
           videoUrl: p.videoUrl || prev.videoUrl,
           // Preserve snapshots; canonical update arrives via the IDB callback below.
           snapshots: prev.snapshots || [],
@@ -297,7 +369,12 @@
           lastSeenAt: now,
         };
       } else {
-        merged = { ...p, snapshots: [], firstSeenAt: now, lastSeenAt: now };
+        merged = {
+          ...p,
+          snapshots: [{ capturedAt: now, views: p.views || 0, likes: p.likes || 0, comments: p.comments || 0 }],
+          firstSeenAt: now,
+          lastSeenAt: now,
+        };
         added++;
       }
       posts.set(p.id, merged);
@@ -314,7 +391,7 @@
         }
       }
     }
-    if (droppedScope) logDebug("ingest.dropped", { scope: pageScope.kind, dropped: droppedScope });
+    if (droppedScope) logInfo("ingest.dropped", { scope: pageScope.kind, videoId: pageScope.videoId || null, dropped: droppedScope });
     // Queue any newly-ingested posts for cross-creator hook-similarity scan.
     if (toPersist.length) queueHookScan(toPersist.map((p) => p.id));
     // Write-through to IDB. After the merge resolves, copy the canonical
@@ -778,14 +855,16 @@
     collector.abort = false;
     collector.reason = null;
     collector.startedAt = Date.now();
+    collectionSeenVideoIds.clear();
+    if (pageScope.videoId) collectionSeenVideoIds.add(String(pageScope.videoId));
     const preIds = new Set(posts.keys());
 
     const { from: cutoff, to: cutoffTo } = rangeCutoffs();
     const limit = state.limit;
 
-    // Per-platform / per-scope advance strategy. IG, TT, YT-channel-grid all
-    // get the default scroll strategy (page-scroll until scrollHeight stalls).
-    // YT shorts-feed gets the snap strategy (click #navigation-button-down).
+    // Per-platform / per-scope advance strategy. IG, TT profile, and
+    // YT-channel-grid get page-scroll until scrollHeight stalls. TT
+    // For You/Explore and YT Shorts use snap-style next-video navigation.
     // Falls back to a synthetic scroll strategy if a platform forgot to
     // declare one — keeps behavior bit-for-bit with the pre-strategy code.
     const strategy = (typeof PLATFORM.collectStrategy === "function"
@@ -793,6 +872,7 @@
       : null) || {
         kind: "scroll",
         useScrollHeightStall: true,
+        useIdleEnd: true,
         advance({ doc }) {
           const d = doc || document;
           if (!d || !d.documentElement) return false;
@@ -803,6 +883,7 @@
 
     logInfo("collect.start", {
       trigger,
+      platform: PLATFORM.platform,
       scope: pageScope,
       surface: state.surface,
       range: state.range,
@@ -810,6 +891,7 @@
       limit,
       url: location.pathname,
       strategy: strategy.kind,
+      useIdleEnd: strategy.useIdleEnd !== false,
     });
     setStatus("collecting…");
 
@@ -820,9 +902,27 @@
     let heightGrewAt = Date.now();
 
     while (!collector.abort) {
+      const beforePath = location.pathname;
+      const beforeScope = { ...pageScope };
       const advanced = strategy.advance({ doc: document });
       scrolls++;
       await sleep(STEP_MS);
+      if (strategy.kind === "snap" || scrolls <= 3 || scrolls % 5 === 0) {
+        logInfo("collect.step", {
+          scrolls,
+          platform: PLATFORM.platform,
+          strategy: strategy.kind,
+          advanced: advanced !== false,
+          beforePath,
+          afterPath: location.pathname,
+          beforeScope,
+          afterScope: pageScope,
+          inScope: inScopeCount(),
+          total: posts.size,
+          abort: collector.abort,
+          reason: collector.reason || null,
+        });
+      }
 
       // The scroll-list jiggle (scroll-up-then-down) un-sticks IG/TT virtual
       // lists that occasionally fail to fire their next page request. It
@@ -886,9 +986,10 @@
       // the idle window and overall timeout so the collector keeps
       // scrolling until it actually hits the goal (or truly stalls).
       const belowLimit = limit > 0 && cur < limit;
+      const endlessSnap = strategy.kind === "snap" && strategy.useIdleEnd === false && limit === 0 && !cutoff;
       const idleBudget = belowLimit ? IDLE_MS_BELOW_LIMIT : IDLE_MS;
-      const timeoutBudget = belowLimit ? COLLECT_TIMEOUT_BELOW_LIMIT_MS : COLLECT_TIMEOUT_MS;
-      if (Date.now() - stagnantSince > idleBudget) {
+      const timeoutBudget = belowLimit || endlessSnap ? COLLECT_TIMEOUT_BELOW_LIMIT_MS : COLLECT_TIMEOUT_MS;
+      if (!endlessSnap && Date.now() - stagnantSince > idleBudget) {
         collector.reason = "idle-end-of-feed";
         break;
       }
@@ -924,33 +1025,44 @@
   window.__feedSorter.stopCollect = stopCollect;
 
   // -------- derived fields (velocity / accelerating) --------
-  // Pure: reads p.snapshots and returns the time-series-derived fields.
-  // velocityViewsPerHr = (views_now - views_first) / hours_since_first.
-  // accelerating = recent-interval velocity > average velocity * 1.5
-  // (requires ≥ 3 snapshots so we have a "recent" vs "overall" comparison).
+  // Pure mirror of src/lib/filter.js computeDerived.
+  // Observed velocity = (current views - first captured views) / elapsed hours
+  // between first capture and last seen; a single baseline snapshot becomes
+  // velocity-ready after the row is re-seen later.
   const ACCEL_RATIO = 1.5;
-  const computeDerived = (p) => {
-    const snaps = Array.isArray(p.snapshots) ? p.snapshots : [];
+  const computeDerived = (p, now = Date.now()) => {
+    const snaps = Array.isArray(p?.snapshots) ? p.snapshots.filter(Boolean) : [];
+    const currentViews = Number(p?.views) || 0;
     if (!snaps.length) {
-      return { firstSeenViews: p.views || 0, velocityViewsPerHr: 0, accelerating: false, snapshotCount: 0 };
+      return { firstSeenViews: currentViews, velocityViewsPerHr: 0, velocityReady: false, accelerating: false, snapshotCount: 0 };
     }
-    const first = snaps[0];
-    const last = snaps[snaps.length - 1];
-    const hrs = Math.max((last.capturedAt - first.capturedAt) / 3600000, 0);
-    const dViews = Math.max(0, (last.views || 0) - (first.views || 0));
-    const velocity = hrs > 0 ? dViews / hrs : 0;
+    const first = snaps[0] || {};
+    const lastSnapshot = snaps[snaps.length - 1] || {};
+    const lastSnapshotViews = Number(lastSnapshot.views) || 0;
+    const last = currentViews > lastSnapshotViews
+      ? { ...lastSnapshot, views: currentViews, capturedAt: Number(p?.lastSeenAt) || now }
+      : lastSnapshot;
+    const firstAt = Number(first.capturedAt) || Number(p?.firstSeenAt) || 0;
+    const lastAtRaw = Math.max(Number(last.capturedAt) || 0, Number(p?.lastSeenAt) || 0, firstAt);
+    const lastAt = Math.max(lastAtRaw, firstAt);
+    const hrs = (lastAt - firstAt) / 3600000;
+    const dViews = Math.max(0, Number(last.views || 0) - Number(first.views || 0));
+    const velocityReady = hrs > 0;
+    const velocity = velocityReady ? dViews / hrs : 0;
     let accelerating = false;
     if (snaps.length >= 3 && velocity > 0) {
-      const prev = snaps[snaps.length - 2];
-      const recentHrs = Math.max((last.capturedAt - prev.capturedAt) / 3600000, 0);
+      const prev = snaps[snaps.length - 2] || {};
+      const prevAt = Number(prev.capturedAt) || firstAt;
+      const recentHrs = Math.max((lastAt - prevAt) / 3600000, 0);
       const recentV = recentHrs > 0
-        ? Math.max(0, (last.views || 0) - (prev.views || 0)) / recentHrs
+        ? Math.max(0, Number(last.views || 0) - Number(prev.views || 0)) / recentHrs
         : 0;
       accelerating = recentV > velocity * ACCEL_RATIO;
     }
     return {
-      firstSeenViews: first.views || 0,
+      firstSeenViews: Number(first.views) || 0,
       velocityViewsPerHr: velocity,
+      velocityReady,
       accelerating,
       snapshotCount: snaps.length,
     };
@@ -1318,11 +1430,15 @@
   const updateHeader = () => {
     if (!els.title) return;
     const suffix = pageScope.kind === "profile" && pageScope.username
-      ? ` · @${pageScope.username}`
+      ? ` · @${pageScope.username}${pageScope.videoId ? " · video" : ""}`
       : pageScope.kind === "explore"
         ? " · explore"
-        : "";
-    els.title.textContent = `Feed Sorter · IG${suffix}`;
+        : pageScope.kind === "shorts-feed"
+          ? " · Shorts"
+          : pageScope.kind === "search"
+            ? " · search"
+            : "";
+    els.title.textContent = `Feed Sorter · ${PLATFORM_LABEL}${suffix}`;
     if (els.reportBtn) {
       const profileScope = pageScope.kind === "profile" && !!pageScope.username;
       els.reportBtn.hidden = !profileScope;
@@ -1413,7 +1529,7 @@
     root.className = "fs-root";
     root.innerHTML = `
       <div class="fs-header" data-drag>
-        <span class="fs-title" data-title>Feed Sorter · IG</span>
+        <span class="fs-title" data-title>Feed Sorter · ${PLATFORM_LABEL}</span>
         <button class="fs-icon-btn fs-signals-bell" data-act="signals" data-signals-btn title="Signals — cross-creator hook reuse" hidden>🔔<span class="fs-tab-badge" data-signals-badge hidden>0</span></button>
         <button class="fs-icon-btn" data-act="report" data-report-btn title="Generate PDF report for this profile" hidden>📄</button>
         <button class="fs-icon-btn fs-pin-btn" data-act="pin-creator" data-pin-btn title="Pin creator to watchlist" hidden>📌</button>
@@ -1432,8 +1548,8 @@
             <select data-ctl="sort">
               <option value="relevance" data-sort-relevance>Relevance (smart)</option>
               <option value="outlier" data-sort-outlier>Outlier score</option>
-              <option value="vph">VPH (views ÷ age)</option>
-              <option value="velocity">Velocity (views/hr, snapshots)</option>
+              <option value="vph">Views/hour since published</option>
+              <option value="velocity">Observed growth since collected</option>
               <option value="likes">Likes</option>
               <option value="views">Views</option>
               <option value="comments">Comments</option>
@@ -2392,10 +2508,8 @@
         // of firing a guaranteed-401.
         const btn = e.target.closest('[data-act="sync-webapp"]');
         if (btn && btn.getAttribute("data-conn") === "off") {
-          chrome.runtime.sendMessage({ type: "fs-bg", cmd: "api.config" }, (cfg) => {
-            const base = (cfg && cfg.baseUrl) || "https://api.feedsorter.app";
-            const appUrl = base.includes("localhost") ? "http://localhost:3000" :
-              base.startsWith("https://api.") ? base.replace("https://api.", "https://app.") : base;
+          fsSettingsReadStg([FS_SETTINGS_KEYS.appUrl]).then((stg) => {
+            const appUrl = (stg[FS_SETTINGS_KEYS.appUrl] || FS_SETTINGS_DEFAULTS.appUrl).replace(/\/+$/, "");
             window.open(appUrl + "/connect", "_blank", "noopener");
           });
           setStatus("opening web app to connect…");
@@ -3330,10 +3444,11 @@
       return;
     }
     // Enrich with derived score so the modal shows the same _score the list does.
+    const nowMs = Date.now();
     const enriched = computeOutliers(sel.map((p) => {
-      const d = computeDerived(p);
+      const d = computeDerived(p, nowMs);
       const cpr = (p.comments || 0) / Math.max(p.likes || 0, 1) * 1000;
-      const vph = vphSincePosted(p);
+      const vph = vphSincePosted(p, nowMs);
       return { ...p, ...d, velocity: d.velocityViewsPerHr, cpr, vph };
     }), state.metric);
 
@@ -3391,7 +3506,7 @@
           <span class="k">Views</span><span class="v">${fmt(p.views || 0)}</span>
           <span class="k">Comments</span><span class="v">${fmt(p.comments || 0)}</span>
           <span class="k">CPR</span><span class="v">${(p.cpr || 0).toFixed(1)}</span>
-          <span class="k">Velocity</span><span class="v">${p.velocityViewsPerHr ? fmt(Math.round(p.velocityViewsPerHr)) + "/hr" : "—"}</span>
+          <span class="k">Velocity</span><span class="v">${p.velocityReady || p.snapshotCount > 1 || (p.snapshotCount > 0 && p.lastSeenAt > p.firstSeenAt) ? fmt(Math.round(p.velocityViewsPerHr || 0)) + "/hr" : "—"}</span>
           <span class="k">Duration</span><span class="v">${dur ? dur + "s" : "—"}</span>
           <span class="k">Caption len</span><span class="v">${capLens[i]}</span>
         </div>
@@ -3588,12 +3703,13 @@
     if (state.angleFilter) list = list.filter((p) => p.ai && p.ai.angle === state.angleFilter);
     // Enrich with derived fields so velocity/accelerating are available
     // to the sort, the outlier metric, the row line, and the CSV.
+    const nowMs = Date.now();
     list = list.map((p) => {
-      const d = computeDerived(p);
+      const d = computeDerived(p, nowMs);
       // Expose `velocity` as an alias so computeOutliers(list, "velocity")
       // reads it directly without special-casing the metric key.
       const cpr = (p.comments || 0) / Math.max(p.likes || 0, 1) * 1000;
-      const vph = vphSincePosted(p);
+      const vph = vphSincePosted(p, nowMs);
       return { ...p, ...d, velocity: d.velocityViewsPerHr, cpr, vph };
     });
     // On Explore the outlier score is not meaningful (no per-author
@@ -3658,24 +3774,24 @@
         const br = _relevanceScoreOf(b, prefs);
         return br - ar;
       }
-      if (key === "outlier") return b._score - a._score;
-      if (key === "recent") return b.createTime - a.createTime;
-      if (key === "velocity") return (b.velocityViewsPerHr || 0) - (a.velocityViewsPerHr || 0);
-      if (key === "vph") return (b.vph || 0) - (a.vph || 0);
-      if (key === "cpr") return (b.cpr || 0) - (a.cpr || 0);
+      if (key === "outlier") return (Number(b._score) || 0) - (Number(a._score) || 0);
+      if (key === "recent") return (Number(b.createTime) || 0) - (Number(a.createTime) || 0);
+      if (key === "velocity") return (Number(b.velocityViewsPerHr) || 0) - (Number(a.velocityViewsPerHr) || 0);
+      if (key === "vph") return (Number(b.vph) || 0) - (Number(a.vph) || 0);
+      if (key === "cpr") return (Number(b.cpr) || 0) - (Number(a.cpr) || 0);
       if (key === "status") {
         const sa = STATUS_RANK[statusOf(a.id)] || 99;
         const sb = STATUS_RANK[statusOf(b.id)] || 99;
         if (sa !== sb) return sa - sb;
-        return b._score - a._score;
+        return (Number(b._score) || 0) - (Number(a._score) || 0);
       }
       if (key === "hookType" || key === "topic" || key === "angle") {
         const va = (a.ai && a.ai[key]) || "\uffff";
         const vb = (b.ai && b.ai[key]) || "\uffff";
         if (va !== vb) return va < vb ? -1 : 1;
-        return (b._score || 0) - (a._score || 0);
+        return (Number(b._score) || 0) - (Number(a._score) || 0);
       }
-      return (b[key] || 0) - (a[key] || 0);
+      return (Number(b[key]) || 0) - (Number(a[key]) || 0);
     });
     if (state.limit > 0) list = list.slice(0, state.limit);
     // Surface a deduped debug log proving the sort actually ran. The
@@ -6709,6 +6825,8 @@
   const rowHTML = (p, i, opts = {}) => {
     const meta = getMetaSync(p.id) || { pinned: false, status: null, note: "", tags: [] };
     const velocity = p.velocityViewsPerHr || 0;
+    const velocityReady = p.velocityReady || p.snapshotCount > 1 || (p.snapshotCount > 0 && p.lastSeenAt > p.firstSeenAt);
+    const velocityLabel = velocityReady ? `${fmt(Math.round(velocity))}/hr` : "—";
     const vph = p.vph || 0;
     const cpr = p.cpr || 0;
     const primary =
@@ -6719,9 +6837,9 @@
         : state.sort === "status"
           ? `<span class="fs-score">${meta.status ? escHTML(meta.status) : "—"}</span>`
           : state.sort === "velocity"
-            ? `<span class="fs-score ${velocity > 0 ? "fs-warm" : ""}">${velocity > 0 ? fmt(Math.round(velocity)) + "/hr" : "—"}</span>`
+            ? `<span class="fs-score ${velocity > 0 ? "fs-warm" : ""}" title="Observed views/hour between your first and latest collection snapshots">${velocityLabel}</span>`
             : state.sort === "vph"
-              ? `<span class="fs-score ${vph > 0 ? "fs-warm" : ""}" title="Views ÷ hours since posted">${vph > 0 ? fmt(Math.round(vph)) + "/hr" : "—"}</span>`
+              ? `<span class="fs-score ${vph > 0 ? "fs-warm" : ""}" title="Total views ÷ hours since the post was published">${vph > 0 ? fmt(Math.round(vph)) + "/hr" : "—"}</span>`
               : state.sort === "cpr"
                 ? `<span class="fs-score ${cpr >= 20 ? "fs-warm" : ""}">${cpr ? cpr.toFixed(1) : "—"}</span>`
                 : `<span class="fs-score">${fmt(p[state.sort] || 0)}</span>`;
@@ -6732,7 +6850,8 @@
     // to one creator. Fall through to the format tag (reel / post) instead.
     const tag = (p.surface === "explore" && pageScope.kind !== "profile")
       ? " · explore"
-      : p.isReel ? " · reel" : "";
+      : p.platform === "youtube" ? " · short"
+        : p.isReel ? " · reel" : "";
     const rising = p.accelerating ? `<span class="fs-rising" title="Recent velocity > 1.5× average">🔥 RISING</span>` : "";
     const who = p.author ? `@${escHTML(p.author)}` : "(unknown)";
     const dlDisabled = p.videoUrl ? "" : "fs-dl-disabled";
@@ -6814,7 +6933,7 @@
           <span class="fs-meta-line1">${who}${tag}${noteIcon}${rising ? " " + rising : ""}</span>
           <span class="fs-meta-stats">
             <span class="fs-meta-stat">${fmt(p.likes)} ♥</span>
-            <span class="fs-meta-stat">${state.sort === "velocity" ? (velocity > 0 ? fmt(Math.round(velocity)) + "/hr" : "0/hr") : state.sort === "vph" ? (vph > 0 ? fmt(Math.round(vph)) + "/hr" : "0/hr") : fmt(p.views)} ▶</span>
+            <span class="fs-meta-stat">${state.sort === "velocity" ? velocityLabel : state.sort === "vph" ? (vph > 0 ? fmt(Math.round(vph)) + "/hr" : "0/hr") : fmt(p.views)} ▶</span>
             <span class="fs-meta-stat">${fmt(p.comments)} 💬</span>
             <span class="fs-meta-stat">${fmtDate(p.createTime)}${cprBadge ? " " + cprBadge : ""}</span>
           </span>
@@ -7005,10 +7124,11 @@
     if (state.scope === "session") list = list.filter((p) => sessionIds.has(p.id));
     if (state.surface !== "all") list = list.filter((p) => matchesSurface(p, state.surface));
     list = applyRangeFilter(list);
+    const nowMs = Date.now();
     list = list.map((p) => {
-      const d = computeDerived(p);
+      const d = computeDerived(p, nowMs);
       const cpr = (p.comments || 0) / Math.max(p.likes || 0, 1) * 1000;
-      const vph = vphSincePosted(p);
+      const vph = vphSincePosted(p, nowMs);
       return { ...p, ...d, velocity: d.velocityViewsPerHr, cpr, vph };
     });
     if (pageScope.kind === "explore") {
@@ -7352,9 +7472,9 @@
     requestAnimationFrame(() => {
       renderQueued = false;
       buildUI();
-      // Tier gate: on Explore + free, swap the scroll-list + stats panel for
-      // an upgrade card. Capture keeps running in the background (harvest()
-      // is wired into the network interceptor, not into render).
+      // Tier gate: on Explore/FYP + free, swap the scroll-list + stats panel
+      // for an upgrade card. Capture keeps running in the background
+      // (harvest() is wired into the network interceptor, not into render).
       const lockExplore = pageScope.kind === "explore" && !proAccess();
       if (els.root) els.root.classList.toggle("fs-locked-explore", lockExplore);
       if (lockExplore) {
@@ -7439,7 +7559,7 @@
         html ||
         `<div style="padding:16px;color:#6a6b78;font-size:12px;text-align:center">
           ${pageScope.kind === "other"
-            ? "Navigate to a profile or Explore to capture posts."
+            ? "Navigate to a profile, Explore, Search, or Shorts feed to capture posts."
             : "Scroll to capture posts, or click Collect all."}
         </div>`;
     });
@@ -7478,13 +7598,14 @@
     ];
     const esc = (s) => `"${String(s ?? "").replace(/"/g, '""')}"`;
     const lines = [header.join(",")];
+    const nowMs = Date.now();
     rows.forEach((p, i) => {
       const au = p.audio || {};
       const lo = p.location || {};
       const me = getMetaSync(p.id) || {};
       // `rows` may be from filtered() (already enriched) or pulled raw from
       // `posts` (selectedOnly fallback path). Re-derive defensively.
-      const d = (p.velocityViewsPerHr === undefined) ? computeDerived(p) : p;
+      const d = (p.velocityViewsPerHr === undefined) ? computeDerived(p, nowMs) : p;
       lines.push([
         i + 1, p.author, p.id, p.shortcode, p.surface, p.productType || "",
         p.createTime ? new Date(p.createTime * 1000).toISOString() : "",
@@ -7592,6 +7713,7 @@
           p.author.toLowerCase() !== pageScope.username && state.scope !== "alltime") {
         continue;
       }
+      if (state.scope !== "alltime" && !isCurrentDetailVideo(p)) continue;
       // Don't blow away records we already merged in this session.
       if (!posts.has(p.id)) {
         posts.set(p.id, p);

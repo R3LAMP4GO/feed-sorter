@@ -103,13 +103,13 @@
   // didn't fire (cross-subdomain etc.).
   // YouTube innertube interception: pattern from
   // `zerodytrash/Simple-YouTube-Age-Restriction-Bypass` `main.js` — wrap
-  // fetch + XHR, match /youtubei/v1/(player|next|browse) URLs, surface the
-  // payload to the content script via window.postMessage.
+  // fetch + XHR, match /youtubei/v1/(player|next|browse) plus Shorts reel
+  // endpoints, surface the payload to the content script via window.postMessage.
   //
   // Profile-info endpoints were added later (bio-first niche cascade,
   // src/lib/niche-signal.js): IG `users/web_profile_info`,
   // legacy `users/<id>/info`, and TT `api/user/detail`.
-  const URL_RE = /\/(api\/v1\/(feed\/user|clips\/user|discover|users\/web_profile_info|users\/[0-9]+\/info)|graphql\/query|api\/(post|recommend|explore|related|user)\/(item_list|detail)|youtubei\/v1\/(player|next|browse))/;
+  const URL_RE = /\/(api\/v1\/(feed\/user|clips\/user|discover|users\/web_profile_info|users\/[0-9]+\/info)|graphql\/query|api\/(post|recommend|explore|related|user)\/(item_list|detail)|youtubei\/v1\/(player|next|browse|reel\/(reel_item_watch|reel_watch_sequence)))/;
 
   const post = (payload) => {
     try { window.postMessage({ source: SOURCE, ...payload }, "*"); } catch {}
@@ -122,7 +122,8 @@
       const res = await origFetch.apply(this, args);
       try {
         const url = res.url || (typeof args[0] === "string" ? args[0] : args[0]?.url) || "";
-        const tag = res.headers.get(TAG_HEADER);
+        let tag = "";
+        try { tag = res.headers.get(TAG_HEADER) || ""; } catch {}
         if (tag || URL_RE.test(url)) {
           res.clone().text()
             .then((body) => post({ kind: "feed-response", url, tag, body }))
@@ -146,7 +147,8 @@
       this.addEventListener("load", () => {
         try {
           const url = this.__fs_url || "";
-          const tag = this.getResponseHeader(TAG_HEADER);
+          let tag = "";
+          try { tag = this.getResponseHeader(TAG_HEADER) || ""; } catch {}
           if (tag || URL_RE.test(url)) {
             post({ kind: "feed-response", url, tag, body: this.responseText });
           }

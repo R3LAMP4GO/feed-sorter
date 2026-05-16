@@ -80,6 +80,7 @@ describe("getConfig", () => {
     expect(typeof c.parser.harvest).toBe("function");
     expect(typeof c.scope.deriveScope).toBe("function");
     expect(c.profileUrl("khaby")).toBe("https://www.tiktok.com/@khaby");
+    expect(c.scope.deriveScope("/")).toEqual({ kind: "explore", username: null, videoId: null });
     expect(
       c.postUrl({ author: "k", nativeId: "1234" })
     ).toBe("https://www.tiktok.com/@k/video/1234");
@@ -107,9 +108,11 @@ describe("getConfig", () => {
     expect(c.collectStrategy({ kind: "other", username: null }).kind).toBe("scroll");
   });
 
-  it("IG + TT collectStrategy is always scroll", () => {
+  it("IG stays scroll; TT profiles scroll while FYP/Explore snaps", () => {
     expect(getConfig(PLATFORMS.INSTAGRAM).collectStrategy({ kind: "profile" }).kind).toBe("scroll");
-    expect(getConfig(PLATFORMS.TIKTOK).collectStrategy({ kind: "profile" }).kind).toBe("scroll");
+    const tt = getConfig(PLATFORMS.TIKTOK);
+    expect(tt.collectStrategy({ kind: "profile" }).kind).toBe("scroll");
+    expect(tt.collectStrategy({ kind: "explore" }).kind).toBe("snap");
   });
 
   it("returns null for unknown", () => {
@@ -147,6 +150,37 @@ describe("platform-runtime IIFE detects YouTube hosts", () => {
     expect(cfg.scope.deriveScope("/@fitwithmaya/shorts")).toMatchObject({
       kind: "profile",
       username: "fitwithmaya",
+    });
+  });
+
+  it("YT /next harvest uses the payload video id on /feed/shorts", () => {
+    const rt = loadRuntime({ host: "www.youtube.com", pathname: "/feed/shorts" });
+    const cfg = rt.getConfig(rt.PLATFORMS.YOUTUBE);
+    const posts = cfg.parser.harvest({
+      currentVideoEndpoint: { reelWatchEndpoint: { videoId: "ZYxwVuT9876" } },
+      overlay: {
+        reelPlayerOverlayRenderer: {
+          ownerText: {
+            runs: [
+              {
+                text: "Hydra culture",
+                navigationEndpoint: { commandMetadata: { webCommandMetadata: { url: "/@Hydra_culture" } } },
+              },
+            ],
+          },
+          viewCountText: { simpleText: "2.4M views" },
+          likeButton: { likeButtonViewModel: { likeCount: "153K" } },
+        },
+      },
+    }, "next", { kind: "shorts-feed", username: null, videoId: null });
+
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({
+      id: "yt_ZYxwVuT9876",
+      author: "hydra_culture",
+      likes: 153000,
+      views: 2400000,
+      surface: "shorts-feed",
     });
   });
 });

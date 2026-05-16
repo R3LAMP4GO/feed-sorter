@@ -118,5 +118,25 @@
       "urlFilter": "||youtube.com/youtubei/v1/browse",
       "resourceTypes": ["xmlhttprequest", "other"]
     }
+  },
+  {
+    "id": 13, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "yt-next" }
+    ]},
+    "condition": {
+      "urlFilter": "||youtube.com/youtubei/v1/reel/reel_item_watch",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
+    "id": 14, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "yt-shorts" }
+    ]},
+    "condition": {
+      "urlFilter": "||youtube.com/youtubei/v1/reel/reel_watch_sequence",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
   }
 ]

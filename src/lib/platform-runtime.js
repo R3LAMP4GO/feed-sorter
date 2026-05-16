@@ -281,23 +281,23 @@
 
   const ttDeriveScope = (pathname) => {
     const path = pathname || "/";
-    if (path === "/explore" || path.startsWith("/explore/")) {
-      return { kind: "explore", username: null };
+    if (path === "/" || path === "/explore" || path.startsWith("/explore/")) {
+      return { kind: "explore", username: null, videoId: null };
     }
     if (path === "/foryou" || path.startsWith("/foryou/")) {
-      return { kind: "explore", username: null };
+      return { kind: "explore", username: null, videoId: null };
     }
     const m = path.match(/^\/@([\w.][\w._-]*[\w])\/?$/);
     if (m) {
       const u = m[1].toLowerCase();
-      if (!TT_RESERVED.has(u)) return { kind: "profile", username: u };
+      if (!TT_RESERVED.has(u)) return { kind: "profile", username: u, videoId: null };
     }
-    const m2 = path.match(/^\/@([\w.][\w._-]*[\w])\/(?:video|live)\//);
+    const m2 = path.match(/^\/@([\w.][\w._-]*[\w])\/(?:video|live)\/([0-9A-Za-z_-]+)/);
     if (m2) {
       const u = m2[1].toLowerCase();
-      if (!TT_RESERVED.has(u)) return { kind: "profile", username: u };
+      if (!TT_RESERVED.has(u)) return { kind: "profile", username: u, videoId: m2[2] };
     }
-    return { kind: "other", username: null };
+    return { kind: "other", username: null, videoId: null };
   };
 
   const ttLooksLikeMedia = (o) => {
@@ -468,7 +468,7 @@
   // don't speak for the UI surface on their own — fall back to pageScope.kind
   // (mirrors how IG /graphql is refined into "reels"/"profile"/"explore").
   const ytResolveSurface = (urlSurface, pageScope) => {
-    if (urlSurface === "shorts-feed") return "shorts-feed";
+    if (urlSurface === "shorts-feed" || urlSurface === "player" || urlSurface === "next") return "shorts-feed";
     const k = pageScope && pageScope.kind;
     if (k && k !== "other") return k;
     return urlSurface || "other";
@@ -496,13 +496,13 @@
       // Re-shape into a partial post keyed by the videoId in pageScope so
       // the ingest merge folds likes/views/comments/createTime onto the
       // existing row from /player.
-      const nativeId = ps && ps.videoId ? String(ps.videoId) : "";
+      const nativeId = String((enrich && enrich.videoId) || (ps && ps.videoId) || "");
       if (!nativeId) return [];
       return [{
         id: "yt_" + nativeId,
         nativeId,
         shortcode: nativeId,
-        author: ps.username || "",
+        author: enrich.author || ps.username || "",
         likes: num(enrich.likes),
         comments: num(enrich.comments),
         views: num(enrich.views),
@@ -568,6 +568,7 @@
   const YT_SNAP_STRATEGY = Object.freeze({
     kind: "snap",
     useScrollHeightStall: false,
+    useIdleEnd: false,
     advance(opts) {
       const doc = (opts && opts.doc) || (typeof document !== "undefined" ? document : null);
       if (!doc || typeof doc.querySelector !== "function") return false;
@@ -578,11 +579,172 @@
           return true;
         }
       }
-      return false;
+      const w = doc.defaultView || (typeof window !== "undefined" ? window : null);
+      const height = Math.max(1, (w && w.innerHeight) || (doc.documentElement && doc.documentElement.clientHeight) || 900);
+      const sentArrowDown = [doc.activeElement, doc.body, doc.documentElement, w]
+        .map((target) => dispatchArrowDown(target))
+        .some(Boolean);
+      const sentWheel = dispatchWheelDown(doc, height);
+      if (w && typeof w.scrollBy === "function") {
+        w.scrollBy(0, height);
+        return true;
+      }
+      return sentArrowDown || sentWheel;
+    },
+  });
+
+  const TT_NEXT_BUTTON_SELECTORS = Object.freeze([
+    'button[data-e2e="arrow-right"]',
+    'button[data-e2e="arrow-down"]',
+    '[data-e2e="arrow-right"] button',
+    '[data-e2e="arrow-down"] button',
+    'button[aria-label="Go to next video"]',
+    'button[aria-label="Next video"]',
+    'button[aria-label="next video"]',
+    'button[aria-label="Scroll down"]',
+    'button[aria-label="Next"]',
+    'button[title="Next"]',
+    'svg path[d^="m24 27.76"]',
+    'svg path[d^="M24 27.76"]',
+  ]);
+
+  const buttonForSelector = (doc, selector) => {
+    const el = doc.querySelector(selector);
+    if (!el) return null;
+    return (el.closest && el.closest("button")) || el;
+  };
+
+  const isDisabledButton = (btn) =>
+    !!(
+      !btn ||
+      btn.disabled ||
+      (btn.getAttribute && btn.getAttribute("aria-disabled") === "true") ||
+      (btn.getAttribute && btn.getAttribute("disabled") != null)
+    );
+
+  const dispatchArrowDown = (target) => {
+    if (!target || typeof target.dispatchEvent !== "function") return false;
+    const KeyboardEventCtor =
+      target.KeyboardEvent || (typeof KeyboardEvent !== "undefined" ? KeyboardEvent : null);
+    if (!KeyboardEventCtor) return false;
+    const opts = {
+      key: "ArrowDown",
+      code: "ArrowDown",
+      keyCode: 40,
+      which: 40,
+      bubbles: true,
+      cancelable: true,
+    };
+    target.dispatchEvent(new KeyboardEventCtor("keydown", opts));
+    target.dispatchEvent(new KeyboardEventCtor("keyup", opts));
+    return true;
+  };
+
+  const dispatchWheelDown = (doc, amount) => {
+    const w = doc.defaultView || (typeof window !== "undefined" ? window : null);
+    const WheelEventCtor = w && w.WheelEvent ? w.WheelEvent : (typeof WheelEvent !== "undefined" ? WheelEvent : null);
+    if (!WheelEventCtor) return false;
+    const targets = [];
+    const add = (el) => {
+      if (el && typeof el.dispatchEvent === "function" && targets.indexOf(el) < 0) targets.push(el);
+    };
+    add(doc.activeElement);
+    if (typeof doc.elementFromPoint === "function" && w) {
+      add(doc.elementFromPoint(Math.floor((w.innerWidth || 1200) / 2), Math.floor((w.innerHeight || 900) / 2)));
+    }
+    add(doc.body);
+    add(doc.documentElement);
+    add(w);
+    const opts = {
+      deltaY: amount,
+      deltaX: 0,
+      deltaMode: 0,
+      bubbles: true,
+      cancelable: true,
+      clientX: Math.floor(((w && w.innerWidth) || 1200) / 2),
+      clientY: Math.floor(((w && w.innerHeight) || 900) / 2),
+    };
+    let sent = false;
+    for (const target of targets) {
+      target.dispatchEvent(new WheelEventCtor("wheel", opts));
+      sent = true;
+    }
+    return sent;
+  };
+
+  const scrollTikTokContainers = (doc, amount) => {
+    if (typeof doc.querySelectorAll !== "function") return false;
+    const selectors = [
+      '[data-e2e="recommend-list-container"]',
+      '[data-e2e="recommend-list-item-container"]',
+      '[data-e2e="feed-container"]',
+      'main',
+      '#app',
+    ];
+    const candidates = [];
+    for (const sel of selectors) {
+      const nodes = doc.querySelectorAll(sel);
+      for (const el of nodes) candidates.push(el);
+    }
+    const all = doc.querySelectorAll("body, html, div");
+    for (const el of all) {
+      if (candidates.length >= 80) break;
+      if (el && el.classList && el.classList.contains("fs-root")) continue;
+      const scrollable = ((el && el.scrollHeight) || 0) > ((el && el.clientHeight) || 0) + 20;
+      if (scrollable) candidates.push(el);
+    }
+    const seen = new Set();
+    for (const el of candidates) {
+      if (!el || seen.has(el)) continue;
+      seen.add(el);
+      if (typeof el.scrollBy === "function") {
+        el.scrollBy(0, amount);
+        return true;
+      }
+      if (typeof el.scrollTop === "number") {
+        el.scrollTop += amount;
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const TT_SNAP_STRATEGY = Object.freeze({
+    kind: "snap",
+    useScrollHeightStall: false,
+    useIdleEnd: false,
+    advance(opts) {
+      const doc = (opts && opts.doc) || (typeof document !== "undefined" ? document : null);
+      if (!doc || typeof doc.querySelector !== "function") return false;
+      let sawNextButton = false;
+      for (const sel of TT_NEXT_BUTTON_SELECTORS) {
+        const btn = buttonForSelector(doc, sel);
+        if (!btn) continue;
+        sawNextButton = true;
+        if (typeof btn.click === "function" && !isDisabledButton(btn)) {
+          btn.click();
+          return true;
+        }
+      }
+      if (sawNextButton) return false;
+      const w = doc.defaultView || (typeof window !== "undefined" ? window : null);
+      const height = Math.max(1, (w && w.innerHeight) || (doc.documentElement && doc.documentElement.clientHeight) || 900);
+      const sentArrowDown = [doc.activeElement, doc.body, doc.documentElement, w]
+        .map((target) => dispatchArrowDown(target))
+        .some(Boolean);
+      const sentWheel = dispatchWheelDown(doc, height);
+      const scrolledContainer = scrollTikTokContainers(doc, height);
+      if (w && typeof w.scrollBy === "function") {
+        w.scrollBy(0, height);
+        return true;
+      }
+      return sentArrowDown || sentWheel || scrolledContainer;
     },
   });
 
   const defaultCollectStrategy = () => SCROLL_STRATEGY;
+  const ttCollectStrategy = (pageScope) =>
+    pageScope && pageScope.kind === "explore" ? TT_SNAP_STRATEGY : SCROLL_STRATEGY;
 
   // ============ Configs ============
 
@@ -626,7 +788,7 @@
       surfaceFromTag: ttSurfaceFromTag,
       looksLikeMedia: ttLooksLikeMedia,
     },
-    collectStrategy: defaultCollectStrategy,
+    collectStrategy: ttCollectStrategy,
     postUrl: (post) => {
       if (!post) return "";
       if (post.url) return post.url;
@@ -679,14 +841,18 @@
     //   - /shorts/<id>, /feed/shorts            (snap player / FYP)
     //   - /@<handle>/(shorts|videos|community|playlists|featured|streams|posts)
     //   - /channel/<id>, /c/<name>, /user/<name> (legacy creator URLs)
-    // Otherwise /@user or /foryou → TikTok (existing behavior).
+    // Otherwise /@user or /foryou → TikTok. Localhost /explore is ambiguous
+    // with IG stubs, so tests can opt into TikTok via ?platform=tiktok.
     const p = String(pathname == null ? (global.location && global.location.pathname) || "" : pathname);
     if (/^\/shorts\//.test(p) || /^\/feed\/shorts/.test(p)) return PLATFORMS.YOUTUBE;
     if (/^\/@[\w.-]+\/(shorts|videos|community|playlists|featured|streams|posts)\b/.test(p)) {
       return PLATFORMS.YOUTUBE;
     }
     if (/^\/(channel|c|user)\/[\w.-]+/.test(p)) return PLATFORMS.YOUTUBE;
-    if (/^\/@[\w.]/.test(p) || /^\/foryou/.test(p)) return PLATFORMS.TIKTOK;
+    const q = String((global.location && global.location.search) || "").toLowerCase();
+    if (/^\/@[\w.]/.test(p) || /^\/foryou/.test(p) || ((p === "/" || /^\/explore\b/.test(p)) && /(?:[?&])platform=tiktok(?:&|$)/.test(q))) {
+      return PLATFORMS.TIKTOK;
+    }
     return null;
   };
 

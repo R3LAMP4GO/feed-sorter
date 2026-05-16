@@ -29,9 +29,9 @@ export const detectPlatform = (host = "") => {
 //
 // Two flavors:
 //   - "scroll" (default): page-scroll until scrollHeight stalls. Used by IG
-//     profile/explore, TT profile/foryou, YT channel /@handle/shorts grid.
-//   - "snap":   advance the YT Shorts vertical-snap player by clicking
-//     #navigation-button-down. Used on /shorts/<id> + /feed/shorts.
+//     profile/explore, TT profile, and YT channel /@handle/shorts grid.
+//   - "snap":   advance a fixed-height vertical player by clicking/pressing
+//     the next-video control. Used on TT For You/Explore and YT Shorts.
 //
 // Each strategy is a pure factory:
 //   { advance({ doc }) -> boolean,  // false = no-op (end of feed signal)
@@ -67,6 +67,7 @@ const YT_NEXT_BUTTON_SELECTORS = Object.freeze([
 const YT_SNAP_STRATEGY = Object.freeze({
   kind: "snap",
   useScrollHeightStall: false,
+  useIdleEnd: false,
   advance({ doc } = {}) {
     const d = doc || (typeof document !== "undefined" ? document : null);
     if (!d || typeof d.querySelector !== "function") return false;
@@ -77,11 +78,170 @@ const YT_SNAP_STRATEGY = Object.freeze({
         return true;
       }
     }
-    return false;
+    const w = d.defaultView || (typeof window !== "undefined" ? window : null);
+    const amount = Math.max(1, w?.innerHeight || d.documentElement?.clientHeight || 900);
+    const sentArrowDown = [d.activeElement, d.body, d.documentElement, w]
+      .map((target) => dispatchArrowDown(target))
+      .some(Boolean);
+    const sentWheel = dispatchWheelDown(d, amount);
+    if (w && typeof w.scrollBy === "function") {
+      w.scrollBy(0, amount);
+      return true;
+    }
+    return sentArrowDown || sentWheel;
+  },
+});
+
+const TT_NEXT_BUTTON_SELECTORS = Object.freeze([
+  'button[data-e2e="arrow-right"]',
+  'button[data-e2e="arrow-down"]',
+  '[data-e2e="arrow-right"] button',
+  '[data-e2e="arrow-down"] button',
+  'button[aria-label="Go to next video"]',
+  'button[aria-label="Next video"]',
+  'button[aria-label="next video"]',
+  'button[aria-label="Scroll down"]',
+  'button[aria-label="Next"]',
+  'button[title="Next"]',
+  'svg path[d^="m24 27.76"]',
+  'svg path[d^="M24 27.76"]',
+]);
+
+const buttonForSelector = (doc, selector) => {
+  const el = doc.querySelector(selector);
+  if (!el) return null;
+  return el.closest?.("button") || el;
+};
+
+const isDisabledButton = (btn) =>
+  !!(
+    !btn ||
+    btn.disabled ||
+    btn.getAttribute?.("aria-disabled") === "true" ||
+    btn.getAttribute?.("disabled") != null
+  );
+
+const dispatchArrowDown = (target) => {
+  if (!target || typeof target.dispatchEvent !== "function") return false;
+  const KeyboardEventCtor =
+    target.KeyboardEvent || (typeof KeyboardEvent !== "undefined" ? KeyboardEvent : null);
+  if (!KeyboardEventCtor) return false;
+  const opts = {
+    key: "ArrowDown",
+    code: "ArrowDown",
+    keyCode: 40,
+    which: 40,
+    bubbles: true,
+    cancelable: true,
+  };
+  target.dispatchEvent(new KeyboardEventCtor("keydown", opts));
+  target.dispatchEvent(new KeyboardEventCtor("keyup", opts));
+  return true;
+};
+
+const dispatchWheelDown = (doc, amount) => {
+  const w = doc.defaultView || (typeof window !== "undefined" ? window : null);
+  const WheelEventCtor = w?.WheelEvent || (typeof WheelEvent !== "undefined" ? WheelEvent : null);
+  if (!WheelEventCtor) return false;
+  const targets = [];
+  const add = (el) => {
+    if (el && typeof el.dispatchEvent === "function" && !targets.includes(el)) targets.push(el);
+  };
+  add(doc.activeElement);
+  if (typeof doc.elementFromPoint === "function" && w) {
+    add(doc.elementFromPoint(Math.floor((w.innerWidth || 1200) / 2), Math.floor((w.innerHeight || 900) / 2)));
+  }
+  add(doc.body);
+  add(doc.documentElement);
+  add(w);
+  const opts = {
+    deltaY: amount,
+    deltaX: 0,
+    deltaMode: 0,
+    bubbles: true,
+    cancelable: true,
+    clientX: Math.floor((w?.innerWidth || 1200) / 2),
+    clientY: Math.floor((w?.innerHeight || 900) / 2),
+  };
+  let sent = false;
+  for (const target of targets) {
+    target.dispatchEvent(new WheelEventCtor("wheel", opts));
+    sent = true;
+  }
+  return sent;
+};
+
+const scrollTikTokContainers = (doc, amount) => {
+  if (typeof doc.querySelectorAll !== "function") return false;
+  const selectors = [
+    '[data-e2e="recommend-list-container"]',
+    '[data-e2e="recommend-list-item-container"]',
+    '[data-e2e="feed-container"]',
+    'main',
+    '#app',
+  ];
+  const candidates = [];
+  for (const sel of selectors) {
+    for (const el of doc.querySelectorAll(sel)) candidates.push(el);
+  }
+  for (const el of doc.querySelectorAll("body, html, div")) {
+    if (candidates.length >= 80) break;
+    if (el?.classList?.contains("fs-root")) continue;
+    const scrollable = (el.scrollHeight || 0) > (el.clientHeight || 0) + 20;
+    if (scrollable) candidates.push(el);
+  }
+  const seen = new Set();
+  for (const el of candidates) {
+    if (!el || seen.has(el)) continue;
+    seen.add(el);
+    if (typeof el.scrollBy === "function") {
+      el.scrollBy(0, amount);
+      return true;
+    }
+    if (typeof el.scrollTop === "number") {
+      el.scrollTop += amount;
+      return true;
+    }
+  }
+  return false;
+};
+
+const TT_SNAP_STRATEGY = Object.freeze({
+  kind: "snap",
+  useScrollHeightStall: false,
+  useIdleEnd: false,
+  advance({ doc } = {}) {
+    const d = doc || (typeof document !== "undefined" ? document : null);
+    if (!d || typeof d.querySelector !== "function") return false;
+    let sawNextButton = false;
+    for (const sel of TT_NEXT_BUTTON_SELECTORS) {
+      const btn = buttonForSelector(d, sel);
+      if (!btn) continue;
+      sawNextButton = true;
+      if (typeof btn.click === "function" && !isDisabledButton(btn)) {
+        btn.click();
+        return true;
+      }
+    }
+    if (sawNextButton) return false;
+    const w = d.defaultView || (typeof window !== "undefined" ? window : null);
+    const amount = Math.max(1, w?.innerHeight || d.documentElement?.clientHeight || 900);
+    const sentArrowDown = [d.activeElement, d.body, d.documentElement, w]
+      .map((target) => dispatchArrowDown(target))
+      .some(Boolean);
+    const sentWheel = dispatchWheelDown(d, amount);
+    const scrolledContainer = scrollTikTokContainers(d, amount);
+    if (w && typeof w.scrollBy === "function") {
+      w.scrollBy(0, amount);
+      return true;
+    }
+    return sentArrowDown || sentWheel || scrolledContainer;
   },
 });
 
 const defaultCollectStrategy = () => SCROLL_STRATEGY;
+const ttCollectStrategy = (pageScope) =>
+  pageScope && pageScope.kind === "explore" ? TT_SNAP_STRATEGY : SCROLL_STRATEGY;
 
 const igConfig = {
   platform: PLATFORMS.INSTAGRAM,
@@ -113,7 +273,7 @@ const ttConfig = {
   csvPrefix: "tt",
   downloadFolder: "feed-sorter-tt",
   surfaces: ["profile", "foryou", "explore", "related"],
-  collectStrategy: defaultCollectStrategy,
+  collectStrategy: ttCollectStrategy,
   postUrl: (post) => {
     if (!post) return "";
     if (post.url) return post.url;

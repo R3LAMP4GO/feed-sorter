@@ -45,7 +45,28 @@ test("capture: youtube channel /@handle/shorts grid populates posts with yt_-pre
   await page.close();
 });
 
-test("capture: startCollect on /shorts/<id> advances the snap player and ingests new rows", async () => {
+test("capture: youtube shorts permalink only keeps the current short", async () => {
+  const page = await ext.context.newPage();
+  const currentId = "abc123XYZ_-";
+  await page.goto(`${server.origin}/shorts/${currentId}?prefetch=1`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => !!window.fs, null, { timeout: 10_000 });
+
+  await expect
+    .poll(
+      async () => (await page.evaluate(() => window.fs.posts())).length,
+      { timeout: 8_000, intervals: [200, 400, 800] }
+    )
+    .toBe(1);
+
+  const posts = await page.evaluate(() => window.fs.posts());
+  expect(posts[0].nativeId).toBe(currentId);
+  expect(posts[0].platform).toBe("youtube");
+  expect(posts[0].surface).toBe("shorts-feed");
+
+  await page.close();
+});
+
+test("capture: startCollect on /shorts/<id> accumulates shorts visited by collector", async () => {
   const page = await ext.context.newPage();
   await page.goto(`${server.origin}/shorts/abc123XYZ_-`, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => !!window.fs, null, { timeout: 10_000 });
@@ -64,8 +85,8 @@ test("capture: startCollect on /shorts/<id> advances the snap player and ingests
   expect(initialPosts.every((p) => p.surface === "shorts-feed")).toBe(true);
 
   // Kick off the collector. The snap strategy should click
-  // #navigation-button-down repeatedly; each click triggers a fresh /player
-  // fetch with a new videoId, which the YT branch ingests as a new row.
+  // #navigation-button-down repeatedly and accumulate videos after the visible
+  // URL changes to each one.
   // Cap the run by setting a low limit via the page-world API.
   await page.evaluate(() => {
     window.fs.setFilter("limit", 4);
@@ -80,10 +101,10 @@ test("capture: startCollect on /shorts/<id> advances the snap player and ingests
     )
     .toBeGreaterThanOrEqual(2);
 
-  // And that should have produced at least one new yt_ row beyond the initial.
   const finalPosts = await page.evaluate(() => window.fs.posts());
   expect(finalPosts.length).toBeGreaterThan(initialPosts.length);
   expect(finalPosts.every((p) => String(p.id).startsWith("yt_"))).toBe(true);
+  expect(new Set(finalPosts.map((p) => p.nativeId)).size).toBe(finalPosts.length);
 
   // Stop cleanly so afterAll() can shut down without a hung loop.
   await page.evaluate(() => window.fs.stop());

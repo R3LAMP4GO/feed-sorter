@@ -61,6 +61,10 @@ document.getElementById('next-short-btn').addEventListener('click', async () => 
 });
 
 setTimeout(async () => {
+  if (new URLSearchParams(location.search).get('prefetch') === '1') {
+    await fetch('/youtubei/v1/player?v=prefetch001', { method: 'POST', body: '{}' });
+    await fetch('/youtubei/v1/player?v=prefetch002', { method: 'POST', body: '{}' });
+  }
   await fetch('/youtubei/v1/player?v=${videoId}', { method: 'POST', body: '{}' });
   await fetch('/youtubei/v1/next?v=${videoId}', { method: 'POST', body: '{}' });
   document.getElementById('output').textContent = 'loaded';
@@ -106,11 +110,15 @@ export const startStubServer = () =>
       }
       // /youtubei/v1/next → next JSON (likes/views/dateText)
       if (url.startsWith("/youtubei/v1/next")) {
+        const m = url.match(/[?&]v=([^&]+)/);
+        const videoId = m ? decodeURIComponent(m[1]) : "abc123XYZ_-";
+        const base = JSON.parse(loadFixture("youtube-next.json"));
+        base.currentVideoEndpoint = { reelWatchEndpoint: { videoId } };
         res.writeHead(200, {
           "Content-Type": "application/json",
           "x-feed-sorter-tag": "yt-next",
         });
-        res.end(loadFixture("youtube-next.json"));
+        res.end(JSON.stringify(base));
         return;
       }
 

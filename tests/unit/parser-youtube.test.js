@@ -76,13 +76,20 @@ describe('parser-youtube', () => {
     it('namespaces the id with yt_ prefix and hydrates fields', () => {
       const player = loadFixture('youtube-player.json');
       const post = playerToPost(player, { kind: 'shorts-feed', username: null });
-      expect(post.id).toBe(ID_PREFIX_YT + 'abc123XYZ_-');
+      expect(post.id).toBe(`${ID_PREFIX_YT}abc123XYZ_-`);
+      expect(post.author).toBe('fit with maya');
       expect(post.platform).toBe('youtube');
       expect(post.surface).toBe('shorts-feed');
       expect(post.views).toBe(1234567);
       expect(post.durationSec).toBe(47);
       expect(post.url).toBe('https://www.youtube.com/shorts/abc123XYZ_-');
       expect(post.captionTracks).toHaveLength(2);
+    });
+
+    it('does not overwrite player author with shorts page scope', () => {
+      const player = loadFixture('youtube-player.json');
+      const post = playerToPost(player, { kind: 'shorts-feed', username: null, videoId: 'abc123XYZ_-' });
+      expect(post.author).toBe('fit with maya');
     });
 
     it('returns null without videoId', () => {
@@ -127,6 +134,49 @@ describe('parser-youtube', () => {
       expect(posts[0].id.startsWith('yt_')).toBe(true);
       expect(posts[0].platform).toBe('youtube');
     });
+
+    it('parses modern shorts lockup view models with compact view counts', () => {
+      const browse = {
+        contents: {
+          richGridRenderer: {
+            contents: [
+              {
+                richItemRenderer: {
+                  content: {
+                    shortsLockupViewModel: {
+                      entityId: 'shorts-lockup-ZYxwVuT9876',
+                      accessibilityText: 'Debates Capital by Debates Capital 238K views',
+                      overlayMetadata: {
+                        primaryText: { content: 'Debates Capital' },
+                        secondaryText: { content: '238K views' },
+                      },
+                      onTap: {
+                        innertubeCommand: {
+                          reelWatchEndpoint: { videoId: 'ZYxwVuT9876' },
+                          commandMetadata: { webCommandMetadata: { url: '/shorts/ZYxwVuT9876' } },
+                        },
+                      },
+                      thumbnailViewModel: {
+                        image: { sources: [{ url: 'https://i.ytimg.com/vi/ZYxwVuT9876/oar2.jpg' }] },
+                      },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      };
+
+      const posts = harvestBrowse(browse, { kind: 'shorts-feed', username: null });
+      expect(posts).toHaveLength(1);
+      expect(posts[0]).toMatchObject({
+        id: 'yt_ZYxwVuT9876',
+        title: 'Debates Capital',
+        views: 238000,
+        cover: 'https://i.ytimg.com/vi/ZYxwVuT9876/oar2.jpg',
+      });
+    });
   });
 
   describe('enrichFromNext', () => {
@@ -138,6 +188,102 @@ describe('parser-youtube', () => {
       // dateText "Mar 15, 2026" → unix seconds (locale-independent).
       const expected = Math.floor(Date.parse('Mar 15, 2026') / 1000);
       expect(out.uploadedAt).toBe(expected);
+    });
+
+    it('reads modern Shorts engagement buttons and current video id', () => {
+      const next = {
+        currentVideoEndpoint: { reelWatchEndpoint: { videoId: 'ZYxwVuT9876' } },
+        engagementPanels: [
+          {
+            engagementPanelSectionListRenderer: {
+              header: {
+                engagementPanelTitleHeaderRenderer: {
+                  contextualInfo: { content: '1.2K comments' },
+                },
+              },
+            },
+          },
+        ],
+        overlay: {
+          reelPlayerOverlayRenderer: {
+            viewCountText: { simpleText: '2.4M views' },
+            likeButton: {
+              likeButtonViewModel: {
+                likeCount: '153K',
+                buttonViewModel: { accessibilityText: '153K likes' },
+              },
+            },
+            commentsButton: {
+              buttonRenderer: { accessibility: { accessibilityData: { label: '1.2K comments' } } },
+            },
+          },
+        },
+      };
+
+      expect(enrichFromNext(next)).toMatchObject({
+        videoId: 'ZYxwVuT9876',
+        likes: 153000,
+        views: 2400000,
+        comments: 1200,
+      });
+    });
+
+    it('reads reel_item_watch engagement and creator metadata', () => {
+      const next = {
+        videoId: 'n9TZu_Sa55k',
+        overlay: {
+          reelPlayerOverlayRenderer: {
+            ownerText: {
+              runs: [
+                {
+                  text: 'Hydra culture',
+                  navigationEndpoint: { commandMetadata: { webCommandMetadata: { url: '/@Hydra_culture' } } },
+                },
+              ],
+            },
+            likeButton: { likeButtonViewModel: { likeCount: '669K' } },
+            commentsButton: { buttonRenderer: { accessibilityData: { label: '6,034 comments' } } },
+            viewCountText: { simpleText: '916.4K views' },
+          },
+        },
+      };
+
+      expect(enrichFromNext(next)).toMatchObject({
+        videoId: 'n9TZu_Sa55k',
+        author: 'hydra_culture',
+        likes: 669000,
+        views: 916400,
+        comments: 6034,
+      });
+    });
+
+    it('reads current Shorts likeCountEntity and comment button text', () => {
+      const next = {
+        currentVideoEndpoint: { reelWatchEndpoint: { videoId: 'gpForThree' } },
+        overlay: {
+          reelPlayerOverlayRenderer: {
+            likeButton: {
+              likeButtonViewModel: {
+                likeCountEntity: { likeCountIfIndifferent: '344' },
+              },
+            },
+            commentsButton: {
+              buttonRenderer: {
+                text: { simpleText: '10' },
+                accessibilityData: { label: '10 comments' },
+              },
+            },
+            viewCountText: { simpleText: '13.9K views' },
+          },
+        },
+      };
+
+      expect(enrichFromNext(next)).toMatchObject({
+        videoId: 'gpForThree',
+        likes: 344,
+        comments: 10,
+        views: 13900,
+      });
     });
 
     it('returns zeros on empty input', () => {
@@ -157,6 +303,8 @@ describe('parser-youtube', () => {
       expect(surfaceFromUrlTag('https://www.youtube.com/youtubei/v1/browse?abc', '')).toBe('shorts-feed');
       expect(surfaceFromUrlTag('https://www.youtube.com/youtubei/v1/player?abc', '')).toBe('player');
       expect(surfaceFromUrlTag('https://www.youtube.com/youtubei/v1/next?abc', '')).toBe('next');
+      expect(surfaceFromUrlTag('https://www.youtube.com/youtubei/v1/reel/reel_item_watch?abc', '')).toBe('next');
+      expect(surfaceFromUrlTag('https://www.youtube.com/youtubei/v1/reel/reel_watch_sequence?abc', '')).toBe('shorts-feed');
     });
 
     it('returns "unknown" for everything else', () => {
