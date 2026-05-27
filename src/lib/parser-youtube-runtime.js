@@ -188,6 +188,21 @@
     return str(value).replace(/^@/, '').trim().toLowerCase();
   }
 
+  function normalizeThumbnailUrl(value) {
+    const raw = str(value).trim();
+    if (!raw) return '';
+    if (raw.indexOf('//') === 0) return `https:${raw}`;
+    if (/^https?:\/\//i.test(raw)) return raw;
+    if (raw.indexOf('/vi/') === 0 || raw.indexOf('/vi_webp/') === 0) return `https://i.ytimg.com${raw}`;
+    if (raw.indexOf('/') === 0) return `https://www.youtube.com${raw}`;
+    return raw;
+  }
+
+  function fallbackThumbnailUrl(videoId, quality) {
+    const id = str(videoId).trim();
+    return id ? `https://i.ytimg.com/vi/${encodeURIComponent(id)}/${quality || 'hqdefault'}.jpg` : '';
+  }
+
   function thumbnailUrlOf(value) {
     if (!value || typeof value !== 'object') return '';
     const arrays = [
@@ -199,11 +214,11 @@
     ];
     for (const arr of arrays) {
       if (!Array.isArray(arr) || arr.length === 0) continue;
-      const urls = arr.map((t) => str(t?.url || t?.src)).filter(Boolean);
+      const urls = arr.map((t) => normalizeThumbnailUrl(t?.url || t?.src)).filter(Boolean);
       const found = urls[urls.length - 1];
       if (found) return found;
     }
-    return str(value.thumbnail?.url || value.thumbnailUrl || '');
+    return normalizeThumbnailUrl(value.thumbnail?.url || value.thumbnailUrl || '');
   }
 
   function maxCountForKeyword(root, keywordRe, maxDepth) {
@@ -272,7 +287,7 @@
     if (!nativeId) return null;
     const ownerHandle = firstHandleFrom(micro.ownerProfileUrl);
     const handle = cleanAuthor(ownerHandle || vd.author || micro.ownerChannelName);
-    const cover = thumbnailUrlOf(vd) || thumbnailUrlOf(micro);
+    const cover = thumbnailUrlOf(vd) || thumbnailUrlOf(micro) || fallbackThumbnailUrl(nativeId);
     const surface = ps.kind === 'shorts-feed' ? 'shorts-feed' : ps.kind;
     return {
       id: ID_PREFIX + nativeId,
@@ -608,7 +623,7 @@
       views: viewsOfBrowseItem(value),
       durationSec: parseDurationSeconds(value.lengthText || value.thumbnailOverlayTimeStatusRenderer?.text),
       isReel: true,
-      cover: str(thumbnailUrlOf(value)),
+      cover: str(thumbnailUrlOf(value) || fallbackThumbnailUrl(nativeId)),
       videoUrl: '',
       url: `https://www.youtube.com/shorts/${nativeId}`,
       surface: pageScope?.kind || 'other',

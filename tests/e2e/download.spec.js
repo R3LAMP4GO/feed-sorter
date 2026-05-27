@@ -8,7 +8,8 @@ import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-ig-server.mjs";
 import { launchWithExtension } from "./helpers.js";
 
-let server, ext;
+let server;
+let ext;
 
 test.beforeAll(async () => {
   server = await startStubServer();

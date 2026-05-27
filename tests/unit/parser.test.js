@@ -34,7 +34,55 @@ describe("looksLikeMedia", () => {
     expect(looksLikeMedia({ code: "abc", like_count: 10, media_type: 1 })).toBe(false);
   });
 
-  it("returns false without a stat key", () => {
+  it("accepts newer GraphQL timeline nodes that omit public stat keys", () => {
+    expect(
+      looksLikeMedia({
+        id: "x",
+        code: "abc",
+        __typename: "GraphImage",
+        display_url: "https://cdn.example/a.jpg",
+        taken_at_timestamp: 1_700_000_000,
+      })
+    ).toBe(true);
+  });
+
+  it("accepts newer GraphQL reel nodes with nested media and no public stat keys", () => {
+    const out = harvest(
+      {
+        data: {
+          xdt_api__v1__clips__user__connection_v2: {
+            edges: [
+              {
+                node: {
+                  media: {
+                    pk: "7001",
+                    code: "Reel7001",
+                    media_type: 2,
+                    product_type: "clips",
+                    taken_at: 1_700_000_000,
+                    image_versions2: { candidates: [{ url: "https://cdn.example/r.jpg" }] },
+                    user: { username: "zachking" },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      },
+      "reels"
+    );
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      id: "7001",
+      shortcode: "Reel7001",
+      author: "zachking",
+      isReel: true,
+      surface: "reels",
+    });
+  });
+
+  it("returns false without stats or media payload", () => {
     expect(looksLikeMedia({ pk: "1", code: "abc", media_type: 1 })).toBe(false);
   });
 
@@ -173,6 +221,7 @@ describe("surfaceFromUrlTag", () => {
     expect(surfaceFromUrlTag("/api/v1/discover/topical/", "")).toBe("explore");
     expect(surfaceFromUrlTag("/api/v1/feed/user/foo/", "")).toBe("profile");
     expect(surfaceFromUrlTag("/graphql/query/", "")).toBe("graphql");
+    expect(surfaceFromUrlTag("/api/graphql", "")).toBe("graphql");
   });
   it("returns 'unknown' otherwise", () => {
     expect(surfaceFromUrlTag("/random", "")).toBe("unknown");

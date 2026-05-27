@@ -1,4 +1,4 @@
-// Per-post LLM analysis: hook + topic, in parallel.
+// Per-post LLM analysis: hook + middle + CTA + topic, in parallel.
 //
 // Pure ES module — no chrome APIs, no DOM. Safe for unit tests; the runtime
 // (content.js) calls it through the llm-bridge by passing a `chat` adapter.
@@ -10,7 +10,8 @@
 //     cache = inMemory,        // Map | { get, set, has } keyed by `${model}:${promptHash}`
 //     signal,                  // optional AbortSignal forwarded to chat()
 //   }) → Promise<{
-//     hook, hookType, topic, angle, analyzedAt, model, descHash, cached,
+//     hook, hookType, middle, middleSummary, cta, ctaType, niche,
+//     topic, angle, analyzedAt, model, descHash, cached,
 //   }>
 //
 // Skip-rule: caller checks `post.ai && post.ai.descHash === descHashOf(post.desc)`
@@ -29,8 +30,12 @@ export const HOOK_SCHEMA = {
   properties: {
     hook: { type: "string", description: "The opening line of the post (≤12 words)" },
     hookType: { type: "string", enum: HOOK_TYPES },
+    middle: { type: "string", description: "One-sentence summary of the middle/value section" },
+    cta: { type: "string", description: "Call-to-action text, or empty string if absent" },
+    ctaType: { type: "string", description: "CTA category: follow, comment, save, share, link-in-bio, visit-profile, none" },
+    niche: { type: "string", description: "2–4 word lowercase content niche label" },
   },
-  required: ["hook", "hookType"],
+  required: ["hook", "hookType", "middle", "cta", "ctaType", "niche"],
 };
 
 export const TOPIC_SCHEMA = {
@@ -43,7 +48,7 @@ export const TOPIC_SCHEMA = {
 };
 
 const HOOK_SYSTEM = [
-  "You analyze short-form social-media posts and extract the HOOK.",
+  "You analyze short-form social-media posts and extract the HOOK, MIDDLE, and CTA.",
   "The hook is the opening sentence (or implied opening if only caption is present).",
   "Return strict JSON matching the schema. No commentary, no markdown.",
   "Rules:",
@@ -56,6 +61,10 @@ const HOOK_SYSTEM = [
   "    stat-drop      — leads with a number / statistic",
   "    story-open     — sets a scene / personal anecdote",
   "    other          — none of the above",
+  "- 'middle' MUST summarize the value/body section in one sentence, or empty string if unavailable.",
+  "- 'cta' MUST be the call-to-action text, or empty string if absent.",
+  "- 'ctaType' MUST be one of: follow, comment, save, share, link-in-bio, visit-profile, none.",
+  "- 'niche' MUST be a 2–4 word lowercase content niche label (e.g. 'shorts editing', 'wellness routines').",
 ].join("\n");
 
 const TOPIC_SYSTEM = [
@@ -66,13 +75,21 @@ const TOPIC_SYSTEM = [
   "  'how-to', 'before/after', 'rant', 'reaction', 'tutorial', 'storytime').",
 ].join("\n");
 
+const transcriptText = (post) => {
+  const segs = Array.isArray(post?.transcriptSegments) ? post.transcriptSegments : null;
+  if (segs?.length) {
+    return segs.map((s) => String((s?.text) || "")).join(" ");
+  }
+  return String((post?.transcript) || "");
+};
+
 // Build the user-message payload from caption + optional first-3 transcript
 // segments (task 096ead1c).
 export const buildUserContent = (post) => {
-  const desc = String((post && post.desc) || "").trim();
-  const segs = Array.isArray(post && post.transcriptSegments) ? post.transcriptSegments : null;
+  const desc = String((post?.desc) || "").trim();
+  const segs = Array.isArray(post?.transcriptSegments) ? post.transcriptSegments : null;
   const head = segs
-    ? segs.slice(0, 3).map((s) => String(s && s.text || "").trim()).filter(Boolean)
+    ? segs.slice(0, 3).map((s) => String(s?.text || "").trim()).filter(Boolean)
     : [];
   const parts = [];
   parts.push(`CAPTION:\n${desc || "(no caption)"}`);
@@ -82,13 +99,25 @@ export const buildUserContent = (post) => {
   return parts.join("\n\n");
 };
 
+// Full text used by cheap CSV classifiers. Unlike buildUserContent(), this
+// includes the whole available transcript so category/format filters benefit
+// from TikTok/YouTube captions without invoking an LLM.
+export const buildClassificationText = (post) => {
+  const title = String((post && (post.title || post.name)) || "").trim();
+  const desc = String((post?.desc) || "").trim();
+  const transcript = transcriptText(post).trim();
+  const authorCategory = String((post && (post.authorCategory || post.creatorCategory || post.categoryName)) || "").trim();
+  const authorBio = String((post && (post.authorBio || post.bio)) || "").trim();
+  return [title, desc, transcript, authorCategory, authorBio].filter(Boolean).join("\n\n");
+};
+
 // Stable hash of the *input* the LLM saw — used to detect a stale `post.ai`
 // after the caption changes. Includes transcript-head so a newly-arrived
 // transcript also invalidates.
 export const descHashOf = (post) => promptHash({
-  desc: String((post && post.desc) || "").trim(),
-  segs: Array.isArray(post && post.transcriptSegments)
-    ? post.transcriptSegments.slice(0, 3).map((s) => String(s && s.text || "").trim())
+  desc: String((post?.desc) || "").trim(),
+  segs: Array.isArray(post?.transcriptSegments)
+    ? post.transcriptSegments.slice(0, 3).map((s) => String(s?.text || "").trim())
     : [],
 });
 
@@ -150,9 +179,16 @@ export async function analyzePost(post, opts = {}) {
     runOne(topicKey, topicMessages, TOPIC_SCHEMA, "topic"),
   ]);
 
+  const middle = String(hookRes.json.middle || "").trim();
   const ai = {
     hook: trimWords(hookRes.json.hook, 12),
     hookType: sanitizeHookType(hookRes.json.hookType),
+    middle,
+    middleSummary: middle,
+    cta: String(hookRes.json.cta || "").trim(),
+    ctaType: String(hookRes.json.ctaType || "none").trim() || "none",
+    niche: String(hookRes.json.niche || hookRes.json.nicheLabel || "").toLowerCase().trim(),
+    nicheLabel: String(hookRes.json.niche || hookRes.json.nicheLabel || "").toLowerCase().trim(),
     topic: String(topicRes.json.topic || "").toLowerCase().trim(),
     angle: String(topicRes.json.angle || "").toLowerCase().trim(),
     analyzedAt: Date.now(),
@@ -179,21 +215,13 @@ export const FORMATS = [
   "reaction", "dayinlife", "beforeafter", "other",
 ];
 
-const transcriptText = (post) => {
-  const segs = Array.isArray(post && post.transcriptSegments) ? post.transcriptSegments : null;
-  if (segs && segs.length) {
-    return segs.map((s) => String((s && s.text) || "")).join(" ");
-  }
-  return String((post && post.transcript) || "");
-};
-
 const countMatches = (s, re) => {
   const m = s.match(re);
   return m ? m.length : 0;
 };
 
 export function detectFormat(post) {
-  const desc = String((post && post.desc) || "");
+  const desc = String((post?.desc) || "");
   const lower = desc.toLowerCase();
   const trimmed = desc.trim();
   const lowerTrimmed = trimmed.toLowerCase();
@@ -292,7 +320,7 @@ const hashtagsOf = (s) => {
 };
 
 export function FORMAT_SIGNALS(post) {
-  const desc = String((post && post.desc) || "");
+  const desc = String((post?.desc) || "");
   const lower = desc.toLowerCase();
   const trimmed = desc.trim();
   const transcript = transcriptText(post).toLowerCase();
@@ -310,7 +338,7 @@ export function FORMAT_SIGNALS(post) {
   const hasStoryHashtag = tags.has("storytime") || tags.has("story") || tags.has("mystory");
   const hasPovHashtag = tags.has("pov");
   const hasTutorialHashtag = tags.has("tutorial") || tags.has("howto");
-  const hasDuration = Number.isFinite(post && post.durationSec);
+  const hasDuration = Number.isFinite(post?.durationSec);
   const dur = hasDuration ? Number(post.durationSec) : null;
   // Audio signal: prefer the structured `post.audio.*` shape produced by the
   // IG / TT runtime parsers (platform-runtime.js igAudio / parser-tiktok.js).
@@ -319,7 +347,7 @@ export function FORMAT_SIGNALS(post) {
   const audioObj = post && typeof post.audio === "object" ? post.audio : null;
   const audioIsOriginal = audioObj
     ? audioObj.isOriginal === true
-    : !!(post && post.audioIsOriginal);
+    : !!(post?.audioIsOriginal);
   // "Trending" ≈ a non-original sound that lots of other creators are using.
   // The IG parser populates `audio.useCount`; threshold is empirical (1k+ uses
   // is the lower edge of "clearly a trend" on IG; TT lower because TT discovery
@@ -329,7 +357,7 @@ export function FORMAT_SIGNALS(post) {
   const audioIsLicensedMusic = audioObj ? audioObj.isOriginal === false : false;
   const audioIsTrending = audioObj
     ? (audioObj.isOriginal === false && audioUseCount >= 1000)
-    : !!(post && post.audioIsTrending);
+    : !!(post?.audioIsTrending);
   const isDuet = !!(post && (post.isDuet || post.isStitch || post.parentPostId));
   const transcriptWords = transcript ? transcript.split(/\s+/).filter(Boolean).length : 0;
   const transcriptFirstPerson = transcript ? countMatches(transcript, /\b(i|i['’]m|i['’]ve|me|my|we)\b/g) : 0;
@@ -371,7 +399,7 @@ const addScore = (acc, label, delta) => {
 export function scoreFormats(post) {
   const sig = FORMAT_SIGNALS(post);
   const lower = sig.lower;
-  const trimmed = String((post && post.desc) || "").trim();
+  const trimmed = String((post?.desc) || "").trim();
   const lowerTrimmed = trimmed.toLowerCase();
   const tx = sig.transcript;
   const out = {};
@@ -520,9 +548,171 @@ export function scoreFormats(post) {
 // argmax helper used by callers that still want a single label.
 export function topFormat(post) {
   const scores = scoreFormats(post);
-  let best = "other", bestVal = 0;
+  let best = "other";
+  let bestVal = 0;
   for (const [k, v] of Object.entries(scores)) {
     if (v > bestVal) { best = k; bestVal = v; }
   }
   return bestVal > 0 ? best : "other";
+}
+
+// ---------------------------------------------------------------------------
+// CSV category classification — broad, filterable verticals, no LLM.
+// ---------------------------------------------------------------------------
+
+export const CATEGORY_LABELS = [
+  "business", "finance", "fitness", "beauty", "real-estate", "ai-tools",
+  "marketing", "food", "travel", "parenting", "education", "entertainment",
+  "other",
+];
+
+const CATEGORY_RULES = Object.freeze({
+  business: [
+    /\b(startup|founder|entrepreneur|business|company|companies|ceo|operator|operations|sales|revenue|profit|pricing|offer|client|customers?|leadership|management|hiring|agency|consulting|b2b|saas|ecommerce|shopify)\b/g,
+    /#(startup|founder|entrepreneur|business|businesstips|smallbusiness|sales|saas|ecommerce)\b/g,
+  ],
+  finance: [
+    /\b(money|invest(?:ing|ment|or)?|stocks?|crypto|bitcoin|portfolio|dividend|etf|fund|trading|wealth|retirement|401k|ira|tax(?:es)?|budget|saving|debt|credit score|mortgage|interest rate|inflation|apr|cash flow|net worth)\b/g,
+    /#(finance|investing|money|stocks|crypto|wealth|personalfinance|financialfreedom)\b/g,
+  ],
+  fitness: [
+    /\b(fitness|workout|training|train|gym|lift(?:ing)?|strength|hypertroph|muscle|glutes?|abs|cardio|running|marathon|protein|macros?|calories|calorie deficit|cutting|bulking|meal prep|nutrition|diet|mobility|pilates|yoga|coach)\b/g,
+    /#(fitness|gym|workout|bodybuilding|nutrition|protein|macros|running|pilates|yoga|fitnesstips)\b/g,
+  ],
+  beauty: [
+    /\b(beauty|makeup|skincare|skin care|haircare|hair|nails?|lash(?:es)?|brows?|cosmetic|cosmetics|foundation|concealer|mascara|lipstick|serum|retinol|spf|sunscreen|acne|glow up|grwm|outfit|fashion|style)\b/g,
+    /#(beauty|makeup|skincare|haircare|nails|grwm|fashion|style|ootd)\b/g,
+  ],
+  "real-estate": [
+    /\b(real estate|realtor|property|properties|listing|listings|home buyer|homebuyer|seller|open house|mortgage|escrow|closing costs?|house hack|airbnb|rental|rentals?|landlord|tenant|zillow|housing market|commercial real estate|cre)\b/g,
+    /#(realestate|realtor|property|homebuyer|listingagent|investor|airbnb|rentalproperty)\b/g,
+  ],
+  "ai-tools": [
+    /\b(ai|a\.i\.|artificial intelligence|chatgpt|gpt-?4|claude|gemini|midjourney|runway|elevenlabs|prompt|prompts|prompting|automation|agent|agents|llm|ollama|machine learning|no-code ai|ai tool|ai tools)\b/g,
+    /#(ai|aitools|chatgpt|claude|gemini|midjourney|promptengineering|automation|llm)\b/g,
+  ],
+  marketing: [
+    /\b(marketing|content strategy|content creation|creator|brand|branding|copywriting|hook|hooks|funnel|landing page|email list|newsletter|seo|ads?|paid media|meta ads|google ads|ugc|influencer|viral|algorithm|growth|social media|tiktok shop|lead magnet)\b/g,
+    /#(marketing|contentmarketing|branding|copywriting|seo|socialmedia|growth|creator|viraltips)\b/g,
+  ],
+  food: [
+    /\b(recipe|cook(?:ing)?|bake|baking|meal|dish|dinner|lunch|breakfast|restaurant|chef|kitchen|ingredients?|sauce|pasta|tacos?|coffee|cocktail|protein bowl|air fryer|foodie)\b/g,
+    /#(food|recipe|cooking|baking|foodie|mealprep|dinner|restaurant|coffee)\b/g,
+  ],
+  travel: [
+    /\b(travel|trip|flight|hotel|airbnb|resort|vacation|itinerary|passport|visa|airport|destination|beach|city guide|things to do|solo travel|backpacking|cruise|tourist)\b/g,
+    /#(travel|traveltips|vacation|hotel|flight|itinerary|solotravel|bucketlist)\b/g,
+  ],
+  parenting: [
+    /\b(parent(?:ing)?|mom|dad|motherhood|fatherhood|toddler|baby|newborn|pregnancy|postpartum|kids?|children|school run|homeschool|gentle parenting|tantrum|daycare|nap time|family)\b/g,
+    /#(parenting|momlife|dadlife|motherhood|fatherhood|toddler|baby|family)\b/g,
+  ],
+  education: [
+    /\b(learn|lesson|study|student|teacher|school|college|university|course|classroom|homework|exam|quiz|tutorial|explained|how it works|science|history|math|language learning|books?|reading|research)\b/g,
+    /#(education|learn|study|student|teacher|school|science|history|books)\b/g,
+  ],
+  entertainment: [
+    /\b(comedy|funny|meme|skit|prank|pov|storytime|dance|music|song|movie|film|tv show|netflix|celebrity|reaction|reacting|gaming|gameplay|streamer|anime|trailer)\b/g,
+    /#(comedy|funny|meme|skit|pov|dance|music|movies|gaming|anime|entertainment)\b/g,
+  ],
+});
+
+const CATEGORY_TIEBREAK = CATEGORY_LABELS.filter((label) => label !== "other");
+
+const normalizeCategoryText = (post) => {
+  const text = buildClassificationText(post);
+  const hashtags = Array.isArray(post?.hashtags) ? post.hashtags.map((h) => `#${String(h).replace(/^#/, "")}`).join(" ") : "";
+  const platformCategory = String((post && (post.category || post.topicCategory || post.authorCategory || post.creatorCategory)) || "");
+  return [text, hashtags, platformCategory].filter(Boolean).join("\n").toLowerCase();
+};
+
+const scoreCategoryText = (text) => {
+  const scores = {};
+  for (const label of CATEGORY_TIEBREAK) {
+    let total = 0;
+    for (const re of CATEGORY_RULES[label] || []) {
+      re.lastIndex = 0;
+      total += countMatches(text, re);
+    }
+    if (total > 0) {
+      scores[label] = clamp01(0.25 + Math.min(total, 7) * 0.1);
+    }
+  }
+  return scores;
+};
+
+export function classifyCategory(post) {
+  const text = normalizeCategoryText(post);
+  const scores = scoreCategoryText(text);
+  let best = "other";
+  let confidence = 0;
+  for (const label of CATEGORY_TIEBREAK) {
+    const score = scores[label] || 0;
+    if (score > confidence) {
+      best = label;
+      confidence = score;
+    }
+  }
+  if (confidence <= 0) {
+    return { category: "other", confidence: 0, scores };
+  }
+  return { category: best, confidence: clamp01(confidence), scores };
+}
+
+const VISUAL_FORMATS = new Set(["talking-head", "info-card", "split-screen", "product", "b-roll"]);
+
+const csvContentFormat = (post) => {
+  const scores = scoreFormats(post);
+  let best = "other";
+  let confidence = 0;
+  for (const [label, score] of Object.entries(scores)) {
+    if (score > confidence) {
+      best = label;
+      confidence = score;
+    }
+  }
+  return { contentFormat: best, formatConfidence: clamp01(confidence), formatScores: scores };
+};
+
+const normalizeNicheLabel = (value) => String(value || "")
+  .toLowerCase()
+  .replace(/[_-]+/g, " ")
+  .replace(/[^a-z0-9\s&/]+/g, " ")
+  .replace(/\s+/g, " ")
+  .trim()
+  .split(" ")
+  .slice(0, 4)
+  .join(" ");
+
+export function classifyForCsv(post, opts = {}) {
+  const categoryResult = classifyCategory(post);
+  const formatResult = csvContentFormat(post);
+  const visualFormat = typeof post?.visualFormat === "string" && VISUAL_FORMATS.has(post.visualFormat)
+    ? post.visualFormat
+    : "";
+  const contentFormat = formatResult.contentFormat;
+  const primaryFormat = visualFormat || contentFormat || "other";
+  const hasRuleCategory = categoryResult.category !== "other" && categoryResult.confidence > 0;
+  const hasRuleFormat = contentFormat !== "other" && formatResult.formatConfidence > 0;
+  const source = opts.source
+    || (visualFormat && (hasRuleCategory || hasRuleFormat) ? "mixed" : "rules");
+  const ai = post?.ai && typeof post.ai === "object" ? post.ai : null;
+  const niche = normalizeNicheLabel(
+    (post?.niche)
+      || (ai && (ai.niche || ai.nicheLabel))
+      || (hasRuleCategory ? categoryResult.category : "")
+  );
+  return {
+    category: categoryResult.category,
+    niche,
+    contentFormat,
+    visualFormat: visualFormat || (typeof post?.visualFormat === "string" ? post.visualFormat : ""),
+    format: primaryFormat,
+    categoryConfidence: categoryResult.confidence,
+    formatConfidence: visualFormat ? Math.max(0.75, formatResult.formatConfidence) : formatResult.formatConfidence,
+    classificationSource: source,
+    classificationAt: Number.isFinite(opts.now) ? Number(opts.now) : Date.now(),
+    categoryScores: categoryResult.scores,
+    formatScores: formatResult.formatScores,
+  };
 }

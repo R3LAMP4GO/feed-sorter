@@ -36,7 +36,7 @@ function makeApp(
 
 describe('requireTier', () => {
   beforeEach(() => {
-    delete process.env.DEV_FORCE_TIER;
+    process.env.DEV_FORCE_TIER = undefined;
     process.env.NODE_ENV = 'development';
   });
 

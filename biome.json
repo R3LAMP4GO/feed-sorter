@@ -43,11 +43,15 @@
       "recommended": true,
       "suspicious": {
         "noExplicitAny": "off",
-        "noAssignInExpressions": "off"
+        "noAssignInExpressions": "off",
+        "noImplicitAnyLet": "off",
+        "noThenProperty": "off"
       },
       "style": {
         "noNonNullAssertion": "off",
-        "useImportType": "off"
+        "useImportType": "off",
+        "noParameterAssign": "off",
+        "noCommaOperator": "off"
       },
       "complexity": {
         "noForEach": "off",

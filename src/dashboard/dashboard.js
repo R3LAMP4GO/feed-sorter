@@ -26,7 +26,7 @@ const state = {
 function getStorage(key) {
   return new Promise((resolve) => {
     if (!globalThis.chrome?.storage?.local) return resolve(null);
-    chrome.storage.local.get(key, (r) => resolve(r && r[key]));
+    chrome.storage.local.get(key, (r) => resolve(r?.[key]));
   });
 }
 function setStorage(key, val) {
@@ -46,7 +46,7 @@ async function loadCfg() {
 
 async function importFromIgSink() {
   const all = await getStorage(SINKS_KEY);
-  const at = all && all.airtable;
+  const at = all?.airtable;
   if (!at || !at.token) {
     setStatus("No Airtable creds found in IG extension config.", true);
     return;
@@ -128,14 +128,14 @@ async function loadRows() {
 // ---------- render ----------
 function fmt(n) {
   if (!n) return "0";
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
   return String(Math.round(n));
 }
 function fmtDate(s) {
   if (!s) return "";
   const d = new Date(s * 1000);
-  if (isNaN(d.getTime())) return "";
+  if (Number.isNaN(d.getTime())) return "";
   return d.toISOString().slice(0, 10);
 }
 function scoreCls(s) {
@@ -186,7 +186,7 @@ function render() {
       <td class="num">${i + 1}</td>
       <td><span class="pf pf-${r.platform}">${r.platform}</span></td>
       <td class="author">@${r.author || "?"}</td>
-      <td class="num ${scoreCls(r._score)}">${r._score ? r._score.toFixed(2) + "×" : "—"}</td>
+      <td class="num ${scoreCls(r._score)}">${r._score ? `${r._score.toFixed(2)}×` : "—"}</td>
       <td class="num">${fmt(r.views)}</td>
       <td class="num">${fmt(r.likes)}</td>
       <td class="num">${fmt(r.comments)}</td>

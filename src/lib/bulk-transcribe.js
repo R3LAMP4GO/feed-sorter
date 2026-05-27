@@ -54,7 +54,7 @@ export function createTokenBucket({
 }
 
 const hasMedia = (p) => !!(p && (p.captionUrl || p.videoUrl));
-const hasTranscript = (p) => !!(p && p.transcript && String(p.transcript).trim());
+const hasTranscript = (p) => !!(p?.transcript && String(p.transcript).trim());
 
 /**
  * Run the bulk transcription pool.
@@ -113,12 +113,12 @@ export async function runBulkTranscribe({
       // Skip already-done or no-media — these never count against the bucket.
       if (hasTranscript(p)) {
         counts.skipped++;
-        emit({ id: p && p.id, skipped: true, reason: "already-transcribed" });
+        emit({ id: p?.id, skipped: true, reason: "already-transcribed" });
         continue;
       }
       if (!hasMedia(p)) {
         counts.skipped++;
-        emit({ id: p && p.id, skipped: true, reason: "no-media" });
+        emit({ id: p?.id, skipped: true, reason: "no-media" });
         continue;
       }
 
@@ -133,11 +133,11 @@ export async function runBulkTranscribe({
         try {
           result = await transcribe(p);
         } catch (e) {
-          result = { ok: false, err: String((e && e.message) || e) };
+          result = { ok: false, err: String((e?.message) || e) };
         }
         const ms = now() - t0;
 
-        if (result && result.ok) {
+        if (result?.ok) {
           counts.done++;
           const src = result.source || "unknown";
           tierBreakdown[src] = (tierBreakdown[src] || 0) + 1;
@@ -163,7 +163,7 @@ export async function runBulkTranscribe({
         emit({
           id: p.id,
           ok: false,
-          err: (result && result.err) || "unknown",
+          err: (result?.err) || "unknown",
           ms,
         });
         handled = true;

@@ -76,7 +76,7 @@ class CDP {
       ...opts,
     });
     if (r.exceptionDetails) {
-      throw new Error("eval failed: " + (r.exceptionDetails.exception?.description || r.exceptionDetails.text));
+      throw new Error(`eval failed: ${r.exceptionDetails.exception?.description || r.exceptionDetails.text}`);
     }
     return r.result.value;
   }
@@ -150,7 +150,7 @@ const main = async () => {
   // Reload the extension to pick up any background.js changes since the SW
   // last booted. chrome.runtime.reload() restarts the SW + reinjects content
   // scripts. We then re-find the context after reload.
-  const SHOULD_RELOAD = process.argv.includes("--no-reload") ? false : true;
+  const SHOULD_RELOAD = !process.argv.includes("--no-reload");
   if (SHOULD_RELOAD) {
     console.log("[fix] forcing chrome.runtime.reload() + reloading IG page …");
     try {
@@ -158,7 +158,7 @@ const main = async () => {
         expression: "chrome.runtime.reload()",
         contextId: fs.contextId,
       });
-    } catch (e) { /* expected: the eval gets killed by the reload */ }
+    } catch (_e) { /* expected: the eval gets killed by the reload */ }
     // After chrome.runtime.reload(), MV3 does NOT re-inject content scripts
     // into already-loaded tabs — the tab must navigate. Reload the page.
     await new Promise((r) => setTimeout(r, 1500));
@@ -193,7 +193,7 @@ const main = async () => {
       returnByValue: true,
       contextId: fs.contextId,
     });
-    if (r.exceptionDetails) throw new Error("csEval: " + (r.exceptionDetails.exception?.description || r.exceptionDetails.text));
+    if (r.exceptionDetails) throw new Error(`csEval: ${r.exceptionDetails.exception?.description || r.exceptionDetails.text}`);
     return r.result.value;
   };
 
@@ -249,7 +249,7 @@ const main = async () => {
     const meta = await csEval(`new Promise((resolve) => {
       chrome.runtime.sendMessage({ type: "fs-bg", cmd: "cluster-meta" }, (r) => resolve(r?.meta || null));
     })`);
-    if (meta && meta.lastRunAt && meta.lastRunAt > prevAt) {
+    if (meta?.lastRunAt && meta.lastRunAt > prevAt) {
       console.log("\n[fix] === CLUSTER COMPLETE ===");
       console.log("ms:           ", meta.ms);
       console.log("creatorCount: ", meta.creatorCount);

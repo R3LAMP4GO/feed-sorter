@@ -260,7 +260,7 @@ describe("computeStats — 100+ post profile sanity", () => {
       const len = 20 + ((i * 17) % 400);
       return mk({
         author: i % 5 === 0 ? "guest" : "a",
-        desc: `Post ${i} #${tag} ` + "x".repeat(len),
+        desc: `Post ${i} #${tag} ${"x".repeat(len)}`,
         isReel: i % 3 === 0,
         mediaType: i % 7 === 0 ? 8 : 1,
         carouselCount: i % 7 === 0 ? 3 : 0,

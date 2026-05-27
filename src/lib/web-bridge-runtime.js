@@ -11,7 +11,7 @@
 // We only accept messages whose `event.source === window` AND `event.origin`
 // matches the page we're injected into — same-origin only, no eavesdropping.
 
-(function () {
+(() => {
   if (globalThis.__feedSorterWebBridge) return;
   globalThis.__feedSorterWebBridge = true;
 
@@ -28,7 +28,7 @@
           resolve(r || { ok: false });
         });
       } catch (e) {
-        resolve({ ok: false, err: String(e && e.message || e) });
+        resolve({ ok: false, err: String(e?.message || e) });
       }
     });
   }

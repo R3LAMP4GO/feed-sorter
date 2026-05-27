@@ -22,7 +22,7 @@ function makeFetchImpl(handlers) {
     for (const h of handlers) {
       if (h.match(url, opts)) return h.respond(url, opts);
     }
-    throw new Error("unexpected fetch: " + url);
+    throw new Error(`unexpected fetch: ${url}`);
   };
   fn.calls = calls;
   return fn;

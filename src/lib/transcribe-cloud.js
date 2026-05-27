@@ -50,7 +50,7 @@ export async function transcribeWithGroq(post, opts = {}) {
   } catch {
     return null;
   }
-  const size = (buf && buf.byteLength) || 0;
+  const size = (buf?.byteLength) || 0;
   if (size > GROQ_MAX_BYTES) {
     return { ok: false, err: "video too large", bytes: size };
   }
@@ -167,7 +167,7 @@ export async function transcribeWithHuggingFace(post, opts = {}) {
     let eta = null;
     try {
       const j = await res.json();
-      const n = Number(j && j.estimated_time);
+      const n = Number(j?.estimated_time);
       if (Number.isFinite(n) && n >= 0) eta = Math.min(n, HF_MAX_LOADING_WAIT_S);
     } catch { /* ignore */ }
     if (eta == null) return null;
@@ -198,11 +198,11 @@ export async function testHuggingFaceKey(apiKey, opts = {}) {
       signal,
     });
     if (!res || !res.ok) {
-      return { ok: false, status: (res && res.status) || 0, err: `HTTP ${res && res.status}` };
+      return { ok: false, status: (res?.status) || 0, err: `HTTP ${res?.status}` };
     }
     return { ok: true, status: res.status };
   } catch (e) {
-    return { ok: false, err: String((e && e.message) || e) };
+    return { ok: false, err: String((e?.message) || e) };
   }
 }
 
@@ -221,10 +221,10 @@ export async function testGroqKey(apiKey, opts = {}) {
       signal,
     });
     if (!res || !res.ok) {
-      return { ok: false, status: (res && res.status) || 0, err: `HTTP ${res && res.status}` };
+      return { ok: false, status: (res?.status) || 0, err: `HTTP ${res?.status}` };
     }
     return { ok: true, status: res.status };
   } catch (e) {
-    return { ok: false, err: String((e && e.message) || e) };
+    return { ok: false, err: String((e?.message) || e) };
   }
 }

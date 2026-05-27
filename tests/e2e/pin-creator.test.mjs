@@ -6,7 +6,8 @@ import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-ig-server.mjs";
 import { launchWithExtension } from "./helpers.js";
 
-let server, ext;
+let server;
+let ext;
 
 test.beforeAll(async () => {
   server = await startStubServer();
@@ -62,7 +63,7 @@ test("pin-creator: visible on profile, hidden on explore, toggles watchlist", as
   );
 
   // Creator list should not yet contain zachking.
-  let creators = await getCreators(page);
+  const creators = await getCreators(page);
   expect(creators.find((c) => c.username === "zachking")).toBeFalsy();
 
   await page.locator(".fs-root .fs-pin-btn").click();

@@ -38,7 +38,10 @@ const startSink = () =>
     });
   });
 
-let stubServer, sink, ext, sw;
+let stubServer;
+let sink;
+let ext;
+let sw;
 
 test.beforeAll(async () => {
   stubServer = await startStubServer();

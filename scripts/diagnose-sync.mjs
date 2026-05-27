@@ -35,7 +35,7 @@ await fetch(`${API_URL}/v1/auth/magic-link`, {
 const token = execSync(
   `psql -U ${USER} -d feedsorter -tAc "select token from magic_link_tokens where email='${EMAIL}' and used_at is null order by expires_at desc limit 1;"`,
 ).toString().trim();
-console.log('[token]', token.slice(0, 12) + '…');
+console.log('[token]', `${token.slice(0, 12)}…`);
 
 const userDataDir = mkdtempSync(join(tmpdir(), 'fs-diag-'));
 const ctx = await chromium.launchPersistentContext(userDataDir, {
@@ -77,7 +77,7 @@ const stored = await sw.evaluate(
 console.log('[sw.storage]', {
   baseUrl: stored['fs.api.baseUrl'],
   hasToken: !!stored['fs.api.token'],
-  tokenStart: (stored['fs.api.token'] || '').slice(0, 20) + '…',
+  tokenStart: `${(stored['fs.api.token'] || '').slice(0, 20)}…`,
 });
 
 console.log('\n=== STEP 2: seed IDB with a representative IG post ===');

@@ -30,7 +30,7 @@
   const folderForPost = (post, opts) => {
     opts = opts || {};
     const root = opts.root || "feed-sorter-ig";
-    const author = sanitizeSeg(post && post.author || "unknown");
+    const author = sanitizeSeg(post?.author || "unknown");
     const sc = sanitizeSeg((post && (post.shortcode || post.id)) || "post");
     return `${root}/repurpose-${ymd(opts.date)}/${author}-${sc}`;
   };
@@ -39,28 +39,28 @@
     const minScore = Number(opts.minScore || 0);
     const count = Math.max(1, (opts.count | 0) || 10);
     const list = (Array.isArray(posts) ? posts : []).filter(
-      (p) => p && p.id && Number(p._score || 0) >= minScore,
+      (p) => p?.id && Number(p._score || 0) >= minScore,
     );
     list.sort((a, b) => (Number(b._score) || 0) - (Number(a._score) || 0));
     return list.slice(0, count);
   };
 
   const fmtTags = (tags) => (Array.isArray(tags) ? tags : [])
-    .map((t) => "#" + String(t || "").replace(/^#/, "").trim())
+    .map((t) => `#${String(t || "").replace(/^#/, "").trim()}`)
     .filter((s) => s.length > 1).join(" ");
 
-  const renderTranscriptText = (tx) => (!tx || !tx.text) ? "" : (String(tx.text).trim() + "\n");
-  const renderTranscriptJson = (tx) => JSON.stringify({
-    text: String((tx && tx.text) || ""),
-    language: String((tx && tx.language) || ""),
-    model: String((tx && tx.model) || ""),
-    segments: Array.isArray(tx && tx.segments) ? tx.segments : [],
-  }, null, 2) + "\n";
+  const renderTranscriptText = (tx) => (!tx || !tx.text) ? "" : (`${String(tx.text).trim()}\n`);
+  const renderTranscriptJson = (tx) => `${JSON.stringify({
+    text: String((tx?.text) || ""),
+    language: String((tx?.language) || ""),
+    model: String((tx?.model) || ""),
+    segments: Array.isArray(tx?.segments) ? tx.segments : [],
+  }, null, 2)}\n`;
 
   const renderDiagnosisMarkdown = (post, dx) => {
     if (!dx) return "_no diagnosis_\n";
     return [
-      `# Outlier diagnosis — @${(post && post.author) || "unknown"}`, "",
+      `# Outlier diagnosis — @${(post?.author) || "unknown"}`, "",
       `- **Hook strength:** ${dx.hookStrength}/10`,
       `- **Visual hook strength:** ${dx.visualHookStrength}/10`,
       `- **Topic novelty:** ${dx.topicNovelty}/10`,
@@ -86,7 +86,7 @@
       }
       lines.push("", `**CTA:** ${d.cta || ""}`);
     } else if (platform === "x") {
-      lines.push("# X (Twitter)", "", "## Single", "", "> " + String(d.single || "").replace(/\n/g, "\n> "), "", "## Thread", "");
+      lines.push("# X (Twitter)", "", "## Single", "", `> ${String(d.single || "").replace(/\n/g, "\n> ")}`, "", "## Thread", "");
       (Array.isArray(d.thread) ? d.thread : []).forEach((t, i) => lines.push(`${i + 1}. ${t}`));
     } else if (platform === "linkedin") {
       lines.push("# LinkedIn", "", String(d.post || ""));
@@ -103,40 +103,40 @@
 
   const fmtNum = (n) => {
     const v = Number(n) || 0;
-    if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + "M";
-    if (v >= 1_000) return (v / 1_000).toFixed(1) + "K";
+    if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+    if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
     return String(v);
   };
   const renderReadme = (post, opts) => {
     opts = opts || {};
     const lines = [];
     const score = post && typeof post._score === "number" ? `${post._score.toFixed(2)}×` : "n/a";
-    lines.push(`# @${(post && post.author) || "unknown"} — ${score}`);
-    if (post && post.url) lines.push("", `<${post.url}>`);
+    lines.push(`# @${(post?.author) || "unknown"} — ${score}`);
+    if (post?.url) lines.push("", `<${post.url}>`);
     lines.push("", "## Stats", "");
-    lines.push(`- Score: **${score}** (basis: ${post && post._scoreBasis || "n/a"})`);
-    lines.push(`- Likes: ${fmtNum(post && post.likes)}`);
-    lines.push(`- Views: ${fmtNum(post && post.views)}`);
-    lines.push(`- Comments: ${fmtNum(post && post.comments)}`);
-    if (post && post.createTime) {
+    lines.push(`- Score: **${score}** (basis: ${post?._scoreBasis || "n/a"})`);
+    lines.push(`- Likes: ${fmtNum(post?.likes)}`);
+    lines.push(`- Views: ${fmtNum(post?.views)}`);
+    lines.push(`- Comments: ${fmtNum(post?.comments)}`);
+    if (post?.createTime) {
       const d = new Date(post.createTime > 1e12 ? post.createTime : post.createTime * 1000);
       lines.push(`- Posted: ${d.toISOString().slice(0, 10)}`);
     }
     lines.push("");
-    if (post && post.desc) {
-      lines.push("## Original caption", "", "> " + String(post.desc).replace(/\n/g, "\n> "), "");
+    if (post?.desc) {
+      lines.push("## Original caption", "", `> ${String(post.desc).replace(/\n/g, "\n> ")}`, "");
     }
     lines.push("## Artifacts", "");
     lines.push("- `source.mp4` — original video");
     if (opts.transcript) lines.push("- `transcript.txt` / `transcript.json` — Whisper transcript");
     if (opts.diagnosis) lines.push("- `diagnosis.md` — multimodal Gemma diagnosis");
     for (const p of (opts.platforms || PLATFORMS)) {
-      const ok = opts.bundle && opts.bundle.results && opts.bundle.results[p];
+      const ok = opts.bundle?.results?.[p];
       const fn = PLATFORM_FILENAME[p] || `${p}.md`;
       lines.push(`- \`${fn}\` — ${p}${ok ? "" : " _(failed)_"}`);
     }
     lines.push("", "## Pipeline", "");
-    if (opts.voice && opts.voice.username) {
+    if (opts.voice?.username) {
       lines.push(`- Voice fingerprint: \`@${opts.voice.username}\` (generated ${opts.voice.generatedAt ? new Date(opts.voice.generatedAt).toISOString().slice(0, 10) : "?"})`);
     } else {
       lines.push(`- Voice fingerprint: _none_ (set "Me" in Settings to repurpose in your own voice)`);
@@ -153,7 +153,7 @@
   }
 
   const throwIfAborted = (signal) => {
-    if (signal && signal.aborted) {
+    if (signal?.aborted) {
       const e = new Error("aborted");
       e.name = "AbortError";
       throw e;
@@ -179,11 +179,11 @@
   };
 
   async function checkHealth(opts) {
-    const health = opts && opts.health;
+    const health = opts?.health;
     if (typeof health !== "function") throw new Error("checkHealth: health() adapter required");
     const r = await health({ signal: opts.signal || null });
-    const ollama = (r && r.ollama) || { ok: false };
-    const whisper = (r && r.whisper) || { ok: false };
+    const ollama = (r?.ollama) || { ok: false };
+    const whisper = (r?.whisper) || { ok: false };
     if (!ollama.ok || !whisper.ok) {
       const bad = [];
       if (!ollama.ok) bad.push(`Ollama (${ollama.err || "unreachable"})`);
@@ -210,7 +210,7 @@
     try {
       value = await fn();
     } catch (e) {
-      const err = String((e && e.message) || e);
+      const err = String((e?.message) || e);
       safeEvent(onEvent, { type: "step.fail", postId: post.id, step, err, durationMs: Date.now() - t0 });
       throw e;
     }
@@ -259,10 +259,12 @@
 
     const items = [];
     const durations = [];
-    let completed = 0, failed = 0, skipped = 0;
+    let completed = 0;
+    let failed = 0;
+    let skipped = 0;
 
     for (let idx = 0; idx < picks.length; idx++) {
-      if (signal && signal.aborted) {
+      if (signal?.aborted) {
         safeEvent(onEvent, { type: "batch.aborted", at: idx, total: picks.length });
         break;
       }
@@ -295,7 +297,7 @@
         });
         item.steps.transcribe = tx.value;
         if (tx.skipped) skipped++;
-        if (tx.value && tx.value.text && !post.transcript) post.transcript = tx.value.text;
+        if (tx.value?.text && !post.transcript) post.transcript = tx.value.text;
 
         const dx = await runStep({
           post, step: "diagnose", store, onEvent, signal,
@@ -318,8 +320,8 @@
               onPlatform: (evt) => safeEvent(onEvent, { type: "rewrite.platform", postId: post.id, ...evt }),
             });
             for (const platform of targetPlatforms) {
-              const row = b && b.results && b.results[platform];
-              const err = b && b.errors && b.errors[platform];
+              const row = b?.results?.[platform];
+              const err = b?.errors?.[platform];
               const md = row
                 ? renderPlatformMarkdown(platform, row)
                 : `# ${platform}\n\n_Generation failed: ${err || "no result"}_\n`;
@@ -354,8 +356,8 @@
         durations.push(dur);
         safeEvent(onEvent, { type: "post.ok", index: idx, total: picks.length, postId: post.id, durationMs: dur });
       } catch (e) {
-        const errMsg = String((e && e.message) || e);
-        const aborted = (e && e.name === "AbortError") || (signal && signal.aborted);
+        const errMsg = String((e?.message) || e);
+        const aborted = (e && e.name === "AbortError") || (signal?.aborted);
         item.errors._fatal = errMsg;
         item.durationMs = Date.now() - tPost;
         if (aborted) {
@@ -377,7 +379,7 @@
       completed, skipped, failed, items,
       durationMs: Date.now() - t0,
       averagePerPostMs,
-      aborted: !!(signal && signal.aborted),
+      aborted: !!(signal?.aborted),
     };
     safeEvent(onEvent, Object.assign({ type: "batch.end" }, result));
     return result;

@@ -74,7 +74,7 @@
     let detail = r.status || r.err;
     try {
       const j = r.json || (r.text && JSON.parse(r.text));
-      if (j && j.message) detail = `${r.status} ${j.code || ""}: ${j.message}`;
+      if (j?.message) detail = `${r.status} ${j.code || ""}: ${j.message}`;
     } catch {}
     return { ok: false, msg: `failed: ${detail}`, status: r.status };
   };
@@ -104,7 +104,7 @@
         let detail = resp.status || resp.err;
         try {
           const j = resp.json || (resp.text && JSON.parse(resp.text));
-          if (j && j.message) detail = `${resp.status} ${j.code || ""}: ${j.message}`;
+          if (j?.message) detail = `${resp.status} ${j.code || ""}: ${j.message}`;
         } catch {}
         errors.push(`row ${i} (${r.id}): ${detail}`);
         if (onProgress) onProgress(i + 1, mapped.length, "fail");

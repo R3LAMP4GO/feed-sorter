@@ -61,14 +61,14 @@ export const promptHash = (payload) => {
   const s = canonicalize(payload);
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = (h * 33) ^ s.charCodeAt(i);
-  return ("00000000" + (h >>> 0).toString(16)).slice(-8);
+  return (`00000000${(h >>> 0).toString(16)}`).slice(-8);
 };
 
 const canonicalize = (v) => {
   if (v === null || typeof v !== "object") return JSON.stringify(v);
-  if (Array.isArray(v)) return "[" + v.map(canonicalize).join(",") + "]";
+  if (Array.isArray(v)) return `[${v.map(canonicalize).join(",")}]`;
   const keys = Object.keys(v).sort();
-  return "{" + keys.map((k) => JSON.stringify(k) + ":" + canonicalize(v[k])).join(",") + "}";
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalize(v[k])}`).join(",")}}`;
 };
 
 // Read an Ollama NDJSON stream from a fetch Response. Yields each parsed
@@ -160,7 +160,7 @@ async function chatOllama({
     throw new Error("llm.chat: messages[] required");
   }
 
-  const url = trimEnd(endpoint) + "/api/chat";
+  const url = `${trimEnd(endpoint)}/api/chat`;
   const body = {
     model,
     messages: attachImages(messages, images),
@@ -182,7 +182,7 @@ async function chatOllama({
     : null;
 
   const start = Date.now();
-  log("info", "llm.call.start", { model, kind, postId, hasSchema: !!schema, hasImages: !!(images && images.length) });
+  log("info", "llm.call.start", { model, kind, postId, hasSchema: !!schema, hasImages: !!(images?.length) });
 
   let resp;
   try {
@@ -195,7 +195,7 @@ async function chatOllama({
   } catch (e) {
     if (timer) clearTimeout(timer);
     if (signal) signal.removeEventListener("abort", onParentAbort);
-    log("warn", "llm.call.fail", { kind, postId, err: String(e && e.message || e) });
+    log("warn", "llm.call.fail", { kind, postId, err: String(e?.message || e) });
     throw e;
   }
 
@@ -332,7 +332,7 @@ async function chatGroq({
   } catch (e) {
     if (timer) clearTimeout(timer);
     if (signal) signal.removeEventListener("abort", onParentAbort);
-    log("warn", "llm.call.fail", { provider: "groq", kind, postId, err: String(e && e.message || e) });
+    log("warn", "llm.call.fail", { provider: "groq", kind, postId, err: String(e?.message || e) });
     throw e;
   } finally {
     if (timer) clearTimeout(timer);
@@ -372,10 +372,10 @@ async function chatGroq({
 
   const raw = typeof resp.json === "function" ? await resp.json() : JSON.parse(await resp.text());
   const choice = raw && Array.isArray(raw.choices) ? raw.choices[0] : null;
-  const text = (choice && choice.message && typeof choice.message.content === "string")
+  const text = (choice?.message && typeof choice.message.content === "string")
     ? choice.message.content : "";
-  const tokensIn = (raw && raw.usage && Number(raw.usage.prompt_tokens)) || 0;
-  const tokensOut = (raw && raw.usage && Number(raw.usage.completion_tokens)) || 0;
+  const tokensIn = (raw?.usage && Number(raw.usage.prompt_tokens)) || 0;
+  const tokensOut = (raw?.usage && Number(raw.usage.completion_tokens)) || 0;
   const modelEcho = (raw && typeof raw.model === "string") ? raw.model : useModel;
 
   let json = null;
@@ -445,7 +445,7 @@ export async function listGroqModels({
     throw err;
   }
   const raw = typeof resp.json === "function" ? await resp.json() : JSON.parse(await resp.text());
-  const ids = Array.isArray(raw && raw.data)
+  const ids = Array.isArray(raw?.data)
     ? raw.data.map((m) => (m && typeof m.id === "string" ? m.id : null)).filter(Boolean)
     : [];
   return { ok: true, models: ids, raw };
@@ -485,7 +485,7 @@ async function ollamaHealthCheck(endpoint = DEFAULT_ENDPOINT, {
 } = {}) {
   const fetchFn = fetchImpl || (typeof fetch !== "undefined" ? fetch : null);
   if (!fetchFn) throw new Error("healthCheck: no fetch implementation available");
-  const url = trimEnd(endpoint) + "/api/tags";
+  const url = `${trimEnd(endpoint)}/api/tags`;
 
   const ctrl = new AbortController();
   const onAbort = () => ctrl.abort(new Error("aborted"));
@@ -513,7 +513,7 @@ async function ollamaHealthCheck(endpoint = DEFAULT_ENDPOINT, {
     throw err;
   }
   const raw = typeof resp.json === "function" ? await resp.json() : JSON.parse(await resp.text());
-  const models = Array.isArray(raw && raw.models)
+  const models = Array.isArray(raw?.models)
     ? raw.models.map((m) => (typeof m === "string" ? m : m.name)).filter(Boolean)
     : [];
   return { ok: true, models, raw, durationMs };

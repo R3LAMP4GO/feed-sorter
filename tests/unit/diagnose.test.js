@@ -25,7 +25,7 @@ const mkBlob = () => ({
   ),
 });
 
-const mkFetch = (overrides = {}) => vi.fn(async (url) => ({
+const mkFetch = (overrides = {}) => vi.fn(async (_url) => ({
   ok: true,
   status: 200,
   blob: async () => mkBlob(),

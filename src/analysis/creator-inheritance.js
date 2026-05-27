@@ -25,8 +25,8 @@ const DEFAULT_INHERIT_WEIGHT = 0.7;
 const DEFAULT_OWN_FLOOR = 0.4;
 
 const authorOf = (p) => String((p && (p.author || p.username)) || "").toLowerCase();
-const hasOwnSignal = (p) => {
-  const desc = String((p && p.desc) || "").trim();
+const _hasOwnSignal = (p) => {
+  const desc = String((p?.desc) || "").trim();
   return desc.length > 0;
 };
 

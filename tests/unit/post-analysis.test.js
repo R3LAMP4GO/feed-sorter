@@ -6,16 +6,22 @@
 // network call.
 
 import { describe, it, expect, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 import {
   analyzePost,
   HOOK_SCHEMA,
   TOPIC_SCHEMA,
   HOOK_TYPES,
   buildUserContent,
+  buildClassificationText,
   descHashOf,
   _resetCache,
   detectFormat,
   FORMATS,
+  CATEGORY_LABELS,
+  classifyCategory,
+  classifyForCsv,
 } from "../../src/analysis/post-analysis.js";
 
 const mkPost = (over = {}) => ({
@@ -43,7 +49,7 @@ const mkChat = () => {
     // analyzePost fired them in parallel (Promise.all), not sequentially.
     await allStarted;
     if (payload.kind === "hook") {
-      return { json: { hook: "5 macro myths wrecking your gains", hookType: "listicle" } };
+      return { json: { hook: "5 macro myths wrecking your gains", hookType: "listicle", middle: "Explains which macro habits matter most.", cta: "Save this for meal prep.", ctaType: "save", niche: "macro nutrition" } };
     }
     return { json: { json: undefined, topic: "Macros", angle: "Myth-Busting" }, };
   };
@@ -63,6 +69,7 @@ describe("analyzePost", () => {
     expect(byKind.hook).toBeDefined();
     expect(byKind.topic).toBeDefined();
     expect(byKind.hook.schema).toEqual(HOOK_SCHEMA);
+    expect(byKind.hook.schema.required).toEqual(expect.arrayContaining(["middle", "cta", "ctaType", "niche"]));
     expect(byKind.topic.schema).toEqual(TOPIC_SCHEMA);
     expect(byKind.hook.model).toBe("gemma4");
     expect(byKind.topic.model).toBe("gemma4");
@@ -77,6 +84,12 @@ describe("analyzePost", () => {
     // Merged onto Post.ai.
     expect(ai.hook).toBe("5 macro myths wrecking your gains");
     expect(ai.hookType).toBe("listicle");
+    expect(ai.middle).toBe("Explains which macro habits matter most.");
+    expect(ai.middleSummary).toBe("Explains which macro habits matter most.");
+    expect(ai.cta).toBe("Save this for meal prep.");
+    expect(ai.ctaType).toBe("save");
+    expect(ai.niche).toBe("macro nutrition");
+    expect(ai.nicheLabel).toBe("macro nutrition");
     expect(ai.topic).toBe("macros");        // lowercased
     expect(ai.angle).toBe("myth-busting");  // lowercased
     expect(ai.model).toBe("gemma4");
@@ -94,6 +107,10 @@ describe("analyzePost", () => {
           json: {
             hook: "one two three four five six seven eight nine ten eleven twelve THIRTEEN FOURTEEN",
             hookType: "not-a-real-type",
+            middle: "middle body",
+            cta: "",
+            ctaType: "",
+            niche: "Fitness Tips",
           },
         };
       }
@@ -112,7 +129,7 @@ describe("analyzePost", () => {
     const chat = async (payload) => {
       n++;
       return payload.kind === "hook"
-        ? { json: { hook: "hi", hookType: "question" } }
+        ? { json: { hook: "hi", hookType: "question", middle: "body", cta: "follow", ctaType: "follow", niche: "daily habits" } }
         : { json: { topic: "t", angle: "a" } };
     };
     const post = mkPost();
@@ -135,7 +152,7 @@ describe("analyzePost", () => {
     const chat = async (p) => {
       n++;
       return p.kind === "hook"
-        ? { json: { hook: "h", hookType: "story-open" } }
+        ? { json: { hook: "h", hookType: "story-open", middle: "m", cta: "c", ctaType: "comment", niche: "creator stories" } }
         : { json: { topic: "t", angle: "a" } };
     };
     await analyzePost(mkPost(), { chat, cache, model: "gemma4" });
@@ -233,5 +250,87 @@ describe("detectFormat", () => {
     expect(detectFormat({ desc: "hello world" })).toBe("other");
     expect(detectFormat({ desc: "" })).toBe("other");
     expect(detectFormat({})).toBe("other");
+  });
+});
+
+describe("CSV classification", () => {
+  it("exposes broad category labels as a stable enum", () => {
+    expect(CATEGORY_LABELS).toEqual([
+      "business", "finance", "fitness", "beauty", "real-estate", "ai-tools",
+      "marketing", "food", "travel", "parenting", "education", "entertainment",
+      "other",
+    ]);
+  });
+
+  it("uses full transcript text for category classification", () => {
+    const post = mkPost({
+      desc: "This changed everything",
+      transcriptSegments: [
+        { text: "Here is the sales funnel we use to turn leads into customers." },
+        { text: "The offer and pricing page increased revenue for our SaaS company." },
+      ],
+    });
+    expect(buildClassificationText(post)).toContain("sales funnel");
+    const result = classifyCategory(post);
+    expect(result.category).toBe("business");
+    expect(result.confidence).toBeGreaterThan(0.4);
+  });
+
+  it("classifies common transcript-driven fitness and AI examples", () => {
+    expect(classifyForCsv({
+      desc: "Save this workout",
+      transcript: "Train glutes twice a week, hit protein macros, and keep a calorie deficit.",
+    }).category).toBe("fitness");
+    expect(classifyForCsv({
+      desc: "3 AI tools I use every day",
+      transcript: "ChatGPT, Claude, and Midjourney can automate this workflow.",
+    }).category).toBe("ai-tools");
+  });
+
+  it("prefers strong visualFormat for primary CSV format", () => {
+    const result = classifyForCsv({
+      desc: "How to structure your sales call",
+      transcript: "Step one qualify the lead. Step two present the offer.",
+      visualFormat: "talking-head",
+    }, { now: 123 });
+    expect(result.category).toBe("business");
+    expect(result.contentFormat).toBe("tutorial");
+    expect(result.visualFormat).toBe("talking-head");
+    expect(result.format).toBe("talking-head");
+    expect(result.formatConfidence).toBeGreaterThanOrEqual(0.75);
+    expect(result.classificationSource).toBe("mixed");
+    expect(result.classificationAt).toBe(123);
+  });
+
+  it("falls back deterministically when no category or format signals match", () => {
+    const result = classifyForCsv({ desc: "hello world" }, { now: 456 });
+    expect(result.category).toBe("other");
+    expect(result.contentFormat).toBe("other");
+    expect(result.format).toBe("other");
+    expect(result.categoryConfidence).toBe(0);
+    expect(result.formatConfidence).toBe(0);
+    expect(result.classificationSource).toBe("rules");
+    expect(result.classificationAt).toBe(456);
+  });
+
+  it("keeps the runtime mirror in parity for selected outputs", () => {
+    const code = readFileSync(new URL("../../src/lib/post-analysis-runtime.js", import.meta.url), "utf8");
+    const sandbox = { globalThis: {}, self: {} };
+    sandbox.globalThis = sandbox;
+    runInNewContext(code, sandbox);
+    const runtime = sandbox.__fsPostAnalysis;
+    const post = {
+      desc: "3 AI tools for your content marketing workflow",
+      transcript: "ChatGPT and Claude can automate hooks, landing pages, and email copy.",
+      visualFormat: "info-card",
+    };
+    const esm = classifyForCsv(post, { now: 789 });
+    const iife = runtime.classifyForCsv(post, { now: 789 });
+    expect(runtime.CATEGORY_LABELS).toEqual(CATEGORY_LABELS);
+    expect(iife.category).toBe(esm.category);
+    expect(iife.contentFormat).toBe(esm.contentFormat);
+    expect(iife.format).toBe(esm.format);
+    expect(iife.categoryConfidence).toBe(esm.categoryConfidence);
+    expect(iife.formatConfidence).toBe(esm.formatConfidence);
   });
 });

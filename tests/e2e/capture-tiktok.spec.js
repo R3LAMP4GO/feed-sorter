@@ -2,7 +2,9 @@ import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-tiktok-server.mjs";
 import { launchWithExtension } from "./helpers.js";
 
-let server, ext, sw;
+let server;
+let ext;
+let sw;
 
 test.beforeAll(async () => {
   server = await startStubServer();
@@ -19,6 +21,11 @@ const setTier = (tier) =>
       ),
     tier,
   );
+
+const resetOriginSession = async (page) => {
+  await page.goto(`${server.origin}/__fs-reset`, { waitUntil: "domcontentloaded" });
+  await page.evaluate(() => sessionStorage.clear());
+};
 
 test.afterAll(async () => {
   if (ext) await ext.close();
@@ -204,6 +211,7 @@ test("collect limit: tiktok For You honors a custom 7 item limit", async () => {
 test("collect all: tiktok Explore auto-advances and captures subsequent pages", async () => {
   await setTier("pro");
   const page = await ext.context.newPage();
+  await resetOriginSession(page);
   await page.goto(`${server.origin}/explore?platform=tiktok`, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => !!window.fs, null, { timeout: 10_000 });
 
@@ -214,6 +222,7 @@ test("collect all: tiktok Explore auto-advances and captures subsequent pages", 
     )
     .toBeGreaterThanOrEqual(2);
 
+  await page.evaluate(() => window.fs.setFilter("limit", 4));
   await page.evaluate(() => window.fs.collect());
 
   await expect
@@ -233,6 +242,50 @@ test("collect all: tiktok Explore auto-advances and captures subsequent pages", 
   const logs = await page.evaluate(() => window.fs.logs());
   expect(logs.find((e) => e.event === "collect.start")?.strategy).toBe("snap");
   expect(logs.some((e) => e.event === "capture" && e.surface === "explore")).toBe(true);
+
+  await page.close();
+});
+
+test("collect all: tiktok Explore refreshes and resumes after its feed bottoms out", async () => {
+  await setTier("pro");
+  const page = await ext.context.newPage();
+  await resetOriginSession(page);
+  await page.goto(`${server.origin}/explore?platform=tiktok&pages=1`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => !!window.fs, null, { timeout: 10_000 });
+
+  await expect
+    .poll(
+      async () => page.evaluate(() => window.fs.posts().then((posts) => posts.length)),
+      { timeout: 8_000, intervals: [200, 400, 800] }
+    )
+    .toBeGreaterThanOrEqual(2);
+
+  await page.evaluate(() => window.fs.setFilter("limit", 4));
+  await page.evaluate(() => window.fs.collect());
+
+  await expect
+    .poll(
+      async () => page.evaluate(() => window.__exploreBatch || 0),
+      { timeout: 20_000, intervals: [500, 1_000] }
+    )
+    .toBeGreaterThanOrEqual(1);
+
+  await expect
+    .poll(
+      async () => page.evaluate(() => window.fs.posts().then((posts) => posts.length)),
+      { timeout: 20_000, intervals: [500, 1_000] }
+    )
+    .toBeGreaterThanOrEqual(4);
+
+  await expect
+    .poll(
+      async () => page.evaluate(() => window.fs.logs().find((e) => e.event === "collect.end" && e.reason === "limit-reached")?.reason || ""),
+      { timeout: 12_000, intervals: [500, 1_000] }
+    )
+    .toBe("limit-reached");
+
+  const logs = await page.evaluate(() => window.fs.logs());
+  expect(logs.some((e) => e.event === "collect.resume" && e.platform === "tiktok")).toBe(true);
 
   await page.close();
 });

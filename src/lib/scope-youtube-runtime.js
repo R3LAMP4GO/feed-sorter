@@ -1,6 +1,6 @@
 // IIFE mirror of src/lib/scope-youtube.js. Keep in lock-step.
 
-(function () {
+(() => {
   const HANDLE_RE = /^\/@([A-Za-z0-9._-]+)\/?(?:[a-z]+\/?)?$/;
   const CHANNEL_RE = /^\/channel\/([A-Za-z0-9_-]+)\/?(?:[a-z]+\/?)?$/;
   const LEGACY_C_RE = /^\/(?:c|user)\/([A-Za-z0-9._-]+)\/?(?:[a-z]+\/?)?$/;

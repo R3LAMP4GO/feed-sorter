@@ -6,7 +6,8 @@ import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 import { launchWithExtension } from "./helpers.js";
 
-let server, ext;
+let server;
+let ext;
 
 test.beforeAll(async () => {
   server = await startStubServer();
@@ -25,6 +26,31 @@ const waitPosts = (page, min) =>
       intervals: [100, 200, 400],
     })
     .toBeGreaterThanOrEqual(min);
+
+test("rehydrate: session posts survive a page refresh and keep appending", async () => {
+  const page = await ext.context.newPage();
+
+  await page.goto(`${server.origin}/zachking/`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => !!window.fs, null, { timeout: 10_000 });
+  await waitPosts(page, 4);
+
+  const before = await page.evaluate(async () => (await window.fs.posts()).map((p) => p.id).sort());
+  expect(before.length).toBeGreaterThanOrEqual(4);
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => !!window.fs, null, { timeout: 10_000 });
+  await waitPosts(page, before.length);
+
+  const after = await page.evaluate(async () => (await window.fs.posts()).map((p) => p.id).sort());
+  expect(after).toEqual(before);
+
+  const logs = await page.evaluate(() => window.fs.logs());
+  const rehydrate = logs.find((e) => e.event === "store.rehydrate" && e.mode === "session");
+  expect(rehydrate).toBeTruthy();
+  expect(rehydrate.sessionIds).toBeGreaterThanOrEqual(before.length);
+
+  await page.close();
+});
 
 test("rehydrate: posts survive scope change A → B → A via IDB", async () => {
   const page = await ext.context.newPage();

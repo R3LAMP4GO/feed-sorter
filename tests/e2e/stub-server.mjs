@@ -11,7 +11,7 @@ const FIXTURES = join(__dirname, "..", "fixtures");
 const loadFixture = (name) =>
   readFileSync(join(FIXTURES, name), "utf8");
 
-const profileHTML = (user) => `<!doctype html>
+const profileHTML = (user, mode = "v1") => `<!doctype html>
 <html><head><meta charset="utf-8"><title>${user} • profile</title></head>
 <body>
 <h1>@${user}</h1>
@@ -20,6 +20,13 @@ const profileHTML = (user) => `<!doctype html>
 // Delay fetches so the content script has finished booting and set
 // pageScope before responses arrive (otherwise scope-change clears posts).
 setTimeout(async () => {
+  if (${JSON.stringify(mode)} === 'api-graphql') {
+    const r = await fetch('/api/graphql', { method: 'POST', body: 'doc_id=test' });
+    const j = await r.json();
+    window.__lastApiGraphql = j;
+    document.getElementById('output').textContent = 'loaded api graphql';
+    return;
+  }
   const r = await fetch('/api/v1/feed/user/${user}/');
   const j = await r.json();
   window.__lastFeed = j;
@@ -86,16 +93,22 @@ export const startStubServer = () =>
         res.end(loadFixture("discover-sectional.json"));
         return;
       }
+      if (url.startsWith("/api/graphql")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(loadFixture("graphql-edge.json"));
+        return;
+      }
 
       if (profileMatch) {
         const user = profileMatch[1];
+        const mode = url.includes("apiGraphql=1") ? "api-graphql" : "v1";
         res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(profileHTML(user));
+        res.end(profileHTML(user, mode));
         return;
       }
 
       res.writeHead(404, { "Content-Type": "text/plain" });
-      res.end("not found: " + url);
+      res.end(`not found: ${url}`);
     });
 
     server.listen(0, "127.0.0.1", () => {

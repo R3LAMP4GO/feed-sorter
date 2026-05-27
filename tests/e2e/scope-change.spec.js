@@ -6,7 +6,8 @@ import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-ig-server.mjs";
 import { launchWithExtension } from "./helpers.js";
 
-let server, ext;
+let server;
+let ext;
 
 test.beforeAll(async () => {
   server = await startStubServer();
@@ -33,7 +34,7 @@ test("scope-change: navigating profile A → profile B updates scope", async () 
 
   let cls = await page.locator(".fs-root").getAttribute("class");
   expect(cls).toMatch(/fs-scope-profile/);
-  let title = await page.locator(".fs-root [data-title]").textContent();
+  const title = await page.locator(".fs-root [data-title]").textContent();
   expect(title).toContain("zachking");
 
   // All current posts are zachking.

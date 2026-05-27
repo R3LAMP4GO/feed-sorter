@@ -2,7 +2,7 @@
 // Exposes globalThis.__fsBulkTranscribe = { createTokenBucket, runBulkTranscribe }.
 // Keep in lock-step with the ESM spec — tests run against the spec.
 
-(function (root) {
+((root) => {
   function createTokenBucket(opts) {
     opts = opts || {};
     const limit = typeof opts.limit === "number" ? opts.limit : 30;
@@ -27,8 +27,8 @@
     };
   }
 
-  const hasMedia = (p) => !!(p && (p.captionUrl || p.videoUrl));
-  const hasTranscript = (p) => !!(p && p.transcript && String(p.transcript).trim());
+  const hasMedia = (p) => !!(p && (p.captionUrl || (Array.isArray(p.captionTracks) && p.captionTracks.length) || p.videoUrl));
+  const hasTranscript = (p) => !!(p?.transcript && String(p.transcript).trim());
 
   async function runBulkTranscribe(opts) {
     opts = opts || {};
@@ -69,12 +69,12 @@
 
         if (hasTranscript(p)) {
           counts.skipped++;
-          emit({ id: p && p.id, skipped: true, reason: "already-transcribed" });
+          emit({ id: p?.id, skipped: true, reason: "already-transcribed" });
           continue;
         }
         if (!hasMedia(p)) {
           counts.skipped++;
-          emit({ id: p && p.id, skipped: true, reason: "no-media" });
+          emit({ id: p?.id, skipped: true, reason: "no-media" });
           continue;
         }
 
@@ -89,11 +89,11 @@
           try {
             result = await transcribe(p);
           } catch (e) {
-            result = { ok: false, err: String((e && e.message) || e) };
+            result = { ok: false, err: String((e?.message) || e) };
           }
           const ms = now() - t0;
 
-          if (result && result.ok) {
+          if (result?.ok) {
             counts.done++;
             const src = result.source || "unknown";
             tierBreakdown[src] = (tierBreakdown[src] || 0) + 1;
@@ -115,7 +115,7 @@
             continue;
           }
           counts.failed++;
-          emit({ id: p.id, ok: false, err: (result && result.err) || "unknown", ms });
+          emit({ id: p.id, ok: false, err: (result?.err) || "unknown", ms });
           handled = true;
           break;
         }

@@ -13,12 +13,12 @@ const STUB_PORT = 4501;
 
 // Tiny stub that pretends to be www.instagram.com so content.js mounts.
 import http from 'node:http';
-const stub = http.createServer((req, res) => {
+const stub = http.createServer((_req, res) => {
   res.setHeader('content-type', 'text/html');
   res.end('<!doctype html><html><head><title>FS Stub</title></head><body><div id=root>stub</div></body></html>');
 });
 await new Promise((r) => stub.listen(STUB_PORT, '127.0.0.1', r));
-const STUB_URL = 'http://127.0.0.1:' + STUB_PORT;
+const STUB_URL = `http://127.0.0.1:${STUB_PORT}`;
 console.log('[stub]', STUB_URL);
 
 // Build a temp manifest that matches our stub origin.

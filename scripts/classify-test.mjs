@@ -37,7 +37,7 @@ if (!existsSync(file)) {
 
 // ---------- load ----------
 const raw = JSON.parse(readFileSync(file, "utf8"));
-const posts = Array.isArray(raw) ? raw : Array.isArray(raw && raw.posts) ? raw.posts : [];
+const posts = Array.isArray(raw) ? raw : Array.isArray(raw?.posts) ? raw.posts : [];
 if (!posts.length) {
   console.error("No posts found in input.");
   process.exit(3);
@@ -45,11 +45,11 @@ if (!posts.length) {
 
 // ---------- helpers ----------
 const nameOf = (p) => String((p && (p.author || p.username)) || "(unknown)").toLowerCase();
-const captionOf = (p) => String((p && p.desc) || "").replace(/\s+/g, " ").trim();
-const truncate = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
+const captionOf = (p) => String((p?.desc) || "").replace(/\s+/g, " ").trim();
+const truncate = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const sortLabels = (scores) => Object.entries(scores).sort(([, a], [, b]) => b - a);
 const fmtScore = (v) => v.toFixed(2);
-const pct = (n, d) => (d ? ((n / d) * 100).toFixed(1) + "%" : "—");
+const pct = (n, d) => (d ? `${((n / d) * 100).toFixed(1)}%` : "—");
 
 // ---------- per-post classification ----------
 const filtered = flags.creator
@@ -83,13 +83,13 @@ const labelCounts = Object.fromEntries(FORMAT_LABELS.map((l) => [l, 0]));
 const labelConfSum = Object.fromEntries(FORMAT_LABELS.map((l) => [l, 0]));
 let postsWithAnyConfident = 0;
 let postsMultiLabel = 0;
-let postsZero = 0;
+let _postsZero = 0;
 const byCreator = new Map();
 const spotlight = []; // multi-label posts above min-confidence
 
 for (const { post, scores } of classified) {
   const above = Object.entries(scores).filter(([, v]) => v >= minConf);
-  if (above.length === 0) postsZero++;
+  if (above.length === 0) _postsZero++;
   else postsWithAnyConfident++;
   if (above.length >= 2) {
     postsMultiLabel++;
@@ -161,7 +161,7 @@ const spotSorted = spotlight
   .slice(0, flags.creator ? 9999 : 30);
 
 for (const { post, scores, inferred } of spotSorted) {
-  const labels = sortLabels(scores).map(([k, v]) => `${k}:${fmtScore(v)}${inferred && inferred[k] ? "*" : ""}`).join("  ");
+  const labels = sortLabels(scores).map(([k, v]) => `${k}:${fmtScore(v)}${inferred?.[k] ? "*" : ""}`).join("  ");
   console.log(`  ${post.id || "?"}  @${nameOf(post)}`);
   console.log(`    ${truncate(captionOf(post), 100)}`);
   console.log(`    ${labels}`);
@@ -173,9 +173,9 @@ if (!spotSorted.length) console.log("  (none)");
 if (flags.creator) {
   console.log("\n─── per-post detail ───");
   for (const { post, scores, inferred, inheritedFromCreator } of classified) {
-    const labels = sortLabels(scores).map(([k, v]) => `${k}:${fmtScore(v)}${inferred && inferred[k] ? "*" : ""}`).join("  ");
+    const labels = sortLabels(scores).map(([k, v]) => `${k}:${fmtScore(v)}${inferred?.[k] ? "*" : ""}`).join("  ");
     const tag = inheritedFromCreator ? " [inherited]" : "";
-    console.log(`  ${post.id || "?"}  ${post.durationSec ? post.durationSec + "s" : "??"}  views=${post.views ?? "?"}${tag}`);
+    console.log(`  ${post.id || "?"}  ${post.durationSec ? `${post.durationSec}s` : "??"}  views=${post.views ?? "?"}${tag}`);
     console.log(`    ${truncate(captionOf(post), 140)}`);
     console.log(`    ${labels || "(no labels above noise floor)"}`);
   }

@@ -41,7 +41,7 @@ const cap = (s, n = MAX_BIO_CHARS) => (s && s.length > n ? s.slice(0, n) : s || 
 const igUserFromBody = (body) => {
   if (!body || typeof body !== "object") return null;
   // Most common: { data: { user: {...} } }
-  if (body.data && body.data.user && typeof body.data.user === "object") return body.data.user;
+  if (body.data?.user && typeof body.data.user === "object") return body.data.user;
   // Older shape: { user: {...} }
   if (body.user && typeof body.user === "object") return body.user;
   // Raw user already at root (some graphql variants).
@@ -103,14 +103,14 @@ export function isInstagramProfileInfoUrl(url) {
 const tikTokUserFromBody = (body) => {
   if (!body || typeof body !== "object") return null;
   // Mobile-API shape: { userInfo: { user: {...}, stats: {...} } }
-  if (body.userInfo && body.userInfo.user && typeof body.userInfo.user === "object") {
+  if (body.userInfo?.user && typeof body.userInfo.user === "object") {
     return { user: body.userInfo.user, stats: body.userInfo.stats || null };
   }
   // Web-rehydration shape: { __DEFAULT_SCOPE__: { "webapp.user-detail": { userInfo: { user, stats } } } }
   const scope = body.__DEFAULT_SCOPE__;
   if (scope && typeof scope === "object") {
     const ud = scope["webapp.user-detail"];
-    if (ud && ud.userInfo && ud.userInfo.user) {
+    if (ud?.userInfo?.user) {
       return { user: ud.userInfo.user, stats: ud.userInfo.stats || null };
     }
   }

@@ -25,12 +25,12 @@
   };
   const fmt = (n) => {
     if (!n && n !== 0) return "—";
-    if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
-    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
-    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
     return String(Math.round(n));
   };
-  const fmtScore = (s) => (s ? s.toFixed(2) + "x" : "—");
+  const fmtScore = (s) => (s ? `${s.toFixed(2)}x` : "—");
   const fmtDateISO = (t) => {
     if (!t) return "—";
     const d = new Date(t * 1000);
@@ -171,7 +171,7 @@
       const meanWith = sums.get(t) / n;
       const remN = allN - n;
       const meanWithout = remN > 0 ? (allSum - sums.get(t)) / remN : 0;
-      const lift = meanWithout > 0 ? meanWith / meanWithout : (meanWith > 0 ? Infinity : 0);
+      const lift = meanWithout > 0 ? meanWith / meanWithout : (meanWith > 0 ? Number.POSITIVE_INFINITY : 0);
       hashtagRows.push({ tag: t, n, lift, meanWith });
     }
     hashtagRows.sort((a, b) => b.lift - a.lift);
@@ -433,7 +433,7 @@
       doc.text(lines.slice(0, 3), M + 145, y + 10);
       if (p.url) {
         setText(doc, 8, COLORS.accent);
-        doc.textWithLink(p.url.length > 60 ? p.url.slice(0, 57) + "…" : p.url, M + 145, y + 46, { url: p.url });
+        doc.textWithLink(p.url.length > 60 ? `${p.url.slice(0, 57)}…` : p.url, M + 145, y + 46, { url: p.url });
       }
       cur.y += rowH;
       doc.setDrawColor(...COLORS.grid);
@@ -502,7 +502,8 @@
     const xL = M + 28;
     cur.needRoom(7 * cellH + 30);
     // Compute max for normalization.
-    let maxN = 0, maxScore = 0;
+    let maxN = 0;
+    let maxScore = 0;
     for (let d = 0; d < 7; d++) {
       for (let h = 0; h < 24; h++) {
         const c = r.cadence[d][h];
@@ -566,8 +567,8 @@
       let cx = M;
       doc.text(`#${row.tag}`, cx, cur.y); cx += cols[0].w;
       doc.text(String(row.n), cx + cols[1].w, cur.y, { align: "right" }); cx += cols[1].w;
-      doc.text(row.meanWith.toFixed(2) + "x", cx + cols[2].w, cur.y, { align: "right" }); cx += cols[2].w;
-      const lift = isFinite(row.lift) ? row.lift.toFixed(2) + "x" : "∞";
+      doc.text(`${row.meanWith.toFixed(2)}x`, cx + cols[2].w, cur.y, { align: "right" }); cx += cols[2].w;
+      const lift = Number.isFinite(row.lift) ? `${row.lift.toFixed(2)}x` : "∞";
       doc.text(lift, cx + cols[3].w, cur.y, { align: "right" });
       cur.y += 13;
     }

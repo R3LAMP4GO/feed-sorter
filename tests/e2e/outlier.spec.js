@@ -6,7 +6,8 @@ import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-ig-server.mjs";
 import { launchWithExtension } from "./helpers.js";
 
-let server, ext;
+let server;
+let ext;
 
 test.beforeAll(async () => {
   server = await startStubServer();
@@ -47,7 +48,7 @@ test("outlier: top row matches the highest-_score post", async () => {
     [...document.querySelectorAll(".fs-root .fs-row")].map((r) => ({
       id: r.querySelector(".fs-dl")?.getAttribute("data-id") || null,
       scoreText: (r.querySelector(".fs-score")?.textContent || "").trim(),
-      score: parseFloat(
+      score: Number.parseFloat(
         (r.querySelector(".fs-score")?.textContent || "0").replace("x", "")
       ),
     }))

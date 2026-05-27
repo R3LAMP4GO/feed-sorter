@@ -18,7 +18,7 @@
 
   const igUserFromBody = (body) => {
     if (!body || typeof body !== "object") return null;
-    if (body.data && body.data.user && typeof body.data.user === "object") return body.data.user;
+    if (body.data?.user && typeof body.data.user === "object") return body.data.user;
     if (body.user && typeof body.user === "object") return body.user;
     if (body.username && (body.biography != null || body.full_name != null)) return body;
     return null;
@@ -33,9 +33,9 @@
     const bio = cap(stripStr(u.biography));
     const category = stripStr(u.category_name || u.business_category_name || u.category || "");
     const externalUrl = stripStr(
-      u.external_url || u.external_lynx_url || (u.bio_links && u.bio_links[0] && u.bio_links[0].url) || "",
+      u.external_url || u.external_lynx_url || (u.bio_links?.[0]?.url) || "",
     );
-    const followerCount = Number.isFinite(u.edge_followed_by && u.edge_followed_by.count)
+    const followerCount = Number.isFinite(u.edge_followed_by?.count)
       ? u.edge_followed_by.count
       : Number.isFinite(u.follower_count) ? u.follower_count : null;
     const isBusiness = typeof u.is_business_account === "boolean" ? u.is_business_account : null;
@@ -59,13 +59,13 @@
 
   const tikTokUserFromBody = (body) => {
     if (!body || typeof body !== "object") return null;
-    if (body.userInfo && body.userInfo.user && typeof body.userInfo.user === "object") {
+    if (body.userInfo?.user && typeof body.userInfo.user === "object") {
       return { user: body.userInfo.user, stats: body.userInfo.stats || null };
     }
     const scope = body.__DEFAULT_SCOPE__;
     if (scope && typeof scope === "object") {
       const ud = scope["webapp.user-detail"];
-      if (ud && ud.userInfo && ud.userInfo.user) {
+      if (ud?.userInfo?.user) {
         return { user: ud.userInfo.user, stats: ud.userInfo.stats || null };
       }
     }
@@ -80,8 +80,8 @@
     if (!username) return null;
     const fullName = stripStr(u.nickname);
     const bio = cap(stripStr(u.signature));
-    const externalUrl = stripStr((u.bioLink && u.bioLink.link) || "");
-    const followerCount = Number.isFinite(found.stats && found.stats.followerCount)
+    const externalUrl = stripStr((u.bioLink?.link) || "");
+    const followerCount = Number.isFinite(found.stats?.followerCount)
       ? found.stats.followerCount
       : null;
     return {

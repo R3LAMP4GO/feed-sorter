@@ -2,7 +2,8 @@ import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-youtube-server.mjs";
 import { launchWithExtension } from "./helpers.js";
 
-let server, ext;
+let server;
+let ext;
 
 test.beforeAll(async () => {
   server = await startStubServer();
@@ -102,6 +103,103 @@ test("capture: /feed/shorts hydrates first visible short metrics from DOM", asyn
   });
   expect(post.views).toBeGreaterThanOrEqual(13900);
 
+  await page.close();
+});
+
+test("capture: manual YouTube Shorts navigation keeps previous shorts in the session", async () => {
+  const page = await ext.context.newPage();
+  await page.goto(`${server.origin}/shorts/abc123XYZ_-`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => !!window.fs, null, { timeout: 10_000 });
+
+  await expect
+    .poll(
+      async () => (await page.evaluate(() => window.fs.posts())).map((p) => p.nativeId),
+      { timeout: 8_000, intervals: [200, 400, 800] }
+    )
+    .toContain("abc123XYZ_-");
+
+  await page.click("#next-short-btn");
+
+  await expect
+    .poll(
+      async () => (await page.evaluate(() => window.fs.posts())).map((p) => p.nativeId).sort(),
+      { timeout: 8_000, intervals: [200, 400, 800] }
+    )
+    .toEqual(["abc123XYZ_-", "next001AB"].sort());
+
+  const logs = await page.evaluate(() => window.fs.logs());
+  const scopeChange = logs.find((e) => e.event === "scope.change" && e.to?.videoId === "next001AB");
+  expect(scopeChange).toBeTruthy();
+  expect(scopeChange.onlyDetailVideoChanged).toBe(true);
+
+  await page.close();
+});
+
+test("capture: YouTube Shorts collector records the visible DOM short before advancing", async () => {
+  const page = await ext.context.newPage();
+  await page.goto(`${server.origin}/feed/shorts?domonly=1`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => !!window.fs, null, { timeout: 10_000 });
+
+  await page.evaluate(() => {
+    window.fs.setFilter("limit", 2);
+    window.fs.collect();
+  });
+
+  await expect
+    .poll(
+      async () => {
+        const ids = (await page.evaluate(() => window.fs.posts())).map((p) => p.nativeId);
+        return [ids.includes("domonly001"), ids.includes("next001AB")];
+      },
+      { timeout: 12_000, intervals: [200, 400, 800] }
+    )
+    .toEqual([true, true]);
+
+  const domOnly = await page.evaluate(async () => {
+    const posts = await window.fs.posts();
+    return posts.find((p) => p.nativeId === "domonly001");
+  });
+  expect(domOnly).toMatchObject({
+    likes: 344,
+    comments: 10,
+    views: 13900,
+    cover: expect.stringContaining("i.ytimg.com/vi/domonly001/"),
+  });
+
+  await page.evaluate(() => window.fs.stop());
+  await page.close();
+});
+
+test("capture: YouTube rows render fallback thumbnails when player thumbnails are missing", async () => {
+  const page = await ext.context.newPage();
+  await page.goto(`${server.origin}/feed/shorts?domonly=1`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => !!window.fs, null, { timeout: 10_000 });
+
+  await page.evaluate(() => {
+    window.fs.setFilter("limit", 0);
+    window.fs.collect();
+  });
+
+  await expect
+    .poll(
+      async () => {
+        const posts = await page.evaluate(() => window.fs.posts());
+        const post = posts.find((p) => p.nativeId === "domonly001");
+        return post?.cover || "";
+      },
+      { timeout: 8_000, intervals: [200, 400, 800] }
+    )
+    .toMatch(/https:\/\/i\.ytimg\.com\/vi\/domonly001\/hqdefault\.jpg/);
+
+  await page.evaluate(() => {
+    window.fs.setFilter("sort", "recent");
+    window.fs.setFilter("limit", 0);
+  });
+  const thumb = page.locator('.fs-row[data-row-id="yt_domonly001"] .fs-thumb-link');
+  await expect(thumb).toHaveAttribute("data-cover", /https:\/\/i\.ytimg\.com\/vi\/domonly001\/hqdefault\.jpg/);
+  await expect(thumb.locator("img.fs-thumb")).toHaveAttribute("src", /https:\/\/i\.ytimg\.com\/vi\/domonly001\/hqdefault\.jpg/);
+
+  await page.evaluate(() => window.fs.stop());
   await page.close();
 });
 

@@ -11,7 +11,7 @@
 // already carry `formatScores` (which they won't, until the server populates
 // them on sync).
 
-(function (root) {
+((root) => {
   const DEFAULT_PREFS = Object.freeze({
     formatWeights: {},
     niches: [],
@@ -30,14 +30,14 @@
 
   function mergePrefs(p) {
     const m = { ...DEFAULT_PREFS, ...(p || {}) };
-    m.formatWeights = { ...DEFAULT_PREFS.formatWeights, ...(p && p.formatWeights) };
-    m.niches = Array.isArray(p && p.niches)
+    m.formatWeights = { ...DEFAULT_PREFS.formatWeights, ...(p?.formatWeights) };
+    m.niches = Array.isArray(p?.niches)
       ? p.niches.map((n) => String(n).toLowerCase().trim()).filter(Boolean)
       : [];
-    m.nicheStrictness = Number.isFinite(p && p.nicheStrictness)
+    m.nicheStrictness = Number.isFinite(p?.nicheStrictness)
       ? clamp01(p.nicheStrictness)
       : DEFAULT_PREFS.nicheStrictness;
-    m.weights = { ...DEFAULT_PREFS.weights, ...((p && p.weights) || {}) };
+    m.weights = { ...DEFAULT_PREFS.weights, ...((p?.weights) || {}) };
     return m;
   }
 
@@ -54,8 +54,9 @@
     const prefs = mergePrefs(userPrefs);
     const w = prefs.weights;
 
-    const fScores = (post && post.formatScores) || {};
-    let formatNum = 0, formatDen = 0;
+    const fScores = (post?.formatScores) || {};
+    let formatNum = 0;
+    let formatDen = 0;
     for (const label in fScores) {
       const conf = fScores[label];
       const wLabel = label in prefs.formatWeights ? prefs.formatWeights[label] : 0.5;
@@ -68,7 +69,7 @@
     if (prefs.niches.length === 0) {
       niche = 0.5;
     } else {
-      const postNiche = String((post && post.niche) || "").toLowerCase().trim();
+      const postNiche = String((post?.niche) || "").toLowerCase().trim();
       if (!postNiche) niche = 0.5 - 0.5 * prefs.nicheStrictness;
       else if (prefs.niches.some((n) => n === postNiche)) niche = 1;
       else if (prefs.niches.some((n) => postNiche.includes(n) || n.includes(postNiche))) niche = 0.6;
@@ -95,8 +96,8 @@
     );
 
     let boosted = score;
-    if (post && post.pinned) boosted = clamp01(boosted + 0.20);
-    if (post && post.meta && post.meta.status === "saved") boosted = clamp01(boosted + 0.10);
+    if (post?.pinned) boosted = clamp01(boosted + 0.20);
+    if (post?.meta && post.meta.status === "saved") boosted = clamp01(boosted + 0.10);
     if (post && post.surface === "explore" && outlierRaw < 1.5) boosted = boosted * 0.7;
 
     const components = { format, niche, outlier, velocity };
@@ -107,12 +108,12 @@
   // Caches per post id+desc to avoid recomputing within a sort.
   const _formatCache = new Map();
   function _formatScoresFor(post) {
-    if (post && post.formatScores) return post.formatScores;
-    const id = (post && post.id) || "";
-    const key = id + "|" + ((post && post.desc) || "").length;
+    if (post?.formatScores) return post.formatScores;
+    const id = (post?.id) || "";
+    const key = `${id}|${((post?.desc) || "").length}`;
     let cached = _formatCache.get(key);
     if (cached) return cached;
-    const fn = (root.__fsPostAnalysis && root.__fsPostAnalysis.scoreFormats) || null;
+    const fn = (root.__fsPostAnalysis?.scoreFormats) || null;
     cached = fn ? fn(post) : {};
     _formatCache.set(key, cached);
     if (_formatCache.size > 5000) {

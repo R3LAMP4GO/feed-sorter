@@ -38,7 +38,7 @@ export async function runCascade({ post, mode = "auto", tiers, log, now } = {}) 
   const clock = typeof now === "function" ? now : () => Date.now();
 
   for (const name of order) {
-    const fn = tiers && tiers[name];
+    const fn = tiers?.[name];
     if (typeof fn !== "function") continue;
     const t0 = clock();
     let result = null;

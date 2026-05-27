@@ -177,7 +177,7 @@ export function buildSystemPrompt(voice) {
 const truncate = (s, n) => {
   const t = String(s || "").trim();
   if (!t) return "";
-  return t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t;
+  return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t;
 };
 
 // Build the user message for a given platform. Includes:
@@ -189,10 +189,10 @@ const truncate = (s, n) => {
 export function buildUserPrompt(post, platform, { nudge = "" } = {}) {
   const meta = PLATFORM_META[platform];
   if (!meta) throw new Error(`buildUserPrompt: unknown platform "${platform}"`);
-  const ai = (post && post.ai) || {};
-  const author = String((post && post.author) || "").trim();
-  const caption = truncate(post && post.desc, 1200);
-  const transcript = truncate(post && post.transcript, 2000);
+  const ai = (post?.ai) || {};
+  const author = String((post?.author) || "").trim();
+  const caption = truncate(post?.desc, 1200);
+  const transcript = truncate(post?.transcript, 2000);
 
   const lines = [
     `TARGET PLATFORM: ${meta.label}`,
@@ -358,7 +358,7 @@ export async function rewritePost(post, platforms, opts = {}) {
       raw = r.text || null;
       warnings = VALIDATORS[platform](json);
     } catch (e) {
-      const errMsg = String((e && e.message) || e);
+      const errMsg = String((e?.message) || e);
       out.errors[platform] = errMsg;
       if (onPlatform) {
         try { onPlatform({ platform, status: "fail", err: errMsg }); } catch { /* ignore */ }
@@ -385,7 +385,7 @@ export async function rewritePost(post, platforms, opts = {}) {
       try { await store.putRewrite(row); }
       catch (e) {
         // Persistence failure is non-fatal; record under errors but keep result.
-        out.errors[platform + ":persist"] = String((e && e.message) || e);
+        out.errors[`${platform}:persist`] = String((e?.message) || e);
       }
     }
     if (onPlatform) {
@@ -401,30 +401,30 @@ export async function rewritePost(post, platforms, opts = {}) {
 
 const fmtTags = (tags) =>
   (Array.isArray(tags) ? tags : [])
-    .map((t) => "#" + String(t || "").replace(/^#/, "").trim())
+    .map((t) => `#${String(t || "").replace(/^#/, "").trim()}`)
     .filter((s) => s.length > 1)
     .join(" ");
 
 // Render ONE post's rewrite-bundle into a markdown section.
 export function renderRewriteMarkdown(post, bundle) {
   const lines = [];
-  const author = (post && post.author) || "(unknown)";
-  const url = (post && post.url) || "";
+  const author = (post?.author) || "(unknown)";
+  const url = (post?.url) || "";
   const score = post && typeof post._score === "number" ? `${post._score.toFixed(2)}×` : "n/a";
   lines.push(`## @${author} — ${score}`);
   if (url) lines.push(`<${url}>`);
   lines.push("");
-  if (post && post.desc) {
+  if (post?.desc) {
     lines.push("**Original caption:**");
-    lines.push("> " + String(post.desc).replace(/\n/g, "\n> "));
+    lines.push(`> ${String(post.desc).replace(/\n/g, "\n> ")}`);
     lines.push("");
   }
   for (const platform of PLATFORMS) {
-    const r = bundle && bundle.results && bundle.results[platform];
+    const r = bundle?.results?.[platform];
     const meta = PLATFORM_META[platform];
     lines.push(`### ${meta.label}`);
     if (!r) {
-      const err = bundle && bundle.errors && bundle.errors[platform];
+      const err = bundle?.errors?.[platform];
       lines.push(`_Failed: ${err || "no result"}_`);
       lines.push("");
       continue;
@@ -453,7 +453,7 @@ export function renderRewriteMarkdown(post, bundle) {
       lines.push(`**CTA:** ${d.cta || ""}`);
     } else if (platform === "x") {
       lines.push("**Single:**");
-      lines.push("> " + String(d.single || "").replace(/\n/g, "\n> "));
+      lines.push(`> ${String(d.single || "").replace(/\n/g, "\n> ")}`);
       lines.push("");
       lines.push("**Thread:**");
       (Array.isArray(d.thread) ? d.thread : []).forEach((t, i) => {

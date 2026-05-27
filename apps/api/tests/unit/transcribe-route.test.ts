@@ -235,7 +235,7 @@ function jsonBody(payload: unknown): { body: string; type: string } {
 
 describe('POST /v1/posts/:id/transcribe', () => {
   beforeEach(() => {
-    delete process.env.DEV_FORCE_TIER;
+    process.env.DEV_FORCE_TIER = undefined;
     process.env.NODE_ENV = 'test';
   });
 
@@ -380,7 +380,7 @@ describe('POST /v1/posts/:id/transcribe', () => {
       const { app, usageStore } = makeApp({ user: PRO_USER, groq });
 
       const mp = multipartBody();
-      const res = await app.request(`/posts/not-a-namespaced-id/transcribe`, {
+      const res = await app.request("/posts/not-a-namespaced-id/transcribe", {
         method: 'POST',
         body: mp.body,
       });

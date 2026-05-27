@@ -73,7 +73,7 @@ describe('tier-gate isPro truth table', () => {
 // chrome.storage.onChanged event surface. Lets us drive getTier /
 // onTierChange in node without a browser.
 function makeFakeStorage(initial = {}) {
-  let store = { ...initial };
+  const store = { ...initial };
   const listeners = new Set();
   return {
     get: (keys, cb) => {

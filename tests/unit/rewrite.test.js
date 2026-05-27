@@ -105,7 +105,7 @@ const mkStore = () => {
   const rows = new Map();
   return {
     rows,
-    putRewrite: async (row) => { rows.set(row.postId + "::" + row.platform, row); return row; },
+    putRewrite: async (row) => { rows.set(`${row.postId}::${row.platform}`, row); return row; },
   };
 };
 
@@ -231,7 +231,7 @@ describe("rewrite", () => {
       await rewritePost(mkPost(), PLATFORMS, { chat, store });
       expect(store.rows.size).toBe(4);
       for (const platform of PLATFORMS) {
-        const row = store.rows.get("p1::" + platform);
+        const row = store.rows.get(`p1::${platform}`);
         expect(row).toBeTruthy();
         expect(row.postId).toBe("p1");
         expect(row.platform).toBe(platform);
@@ -268,9 +268,9 @@ describe("rewrite", () => {
         live++;
         maxLive = Math.max(maxLive, live);
         const platform = payload.kind.replace(/^rewrite:/, "");
-        order.push("start:" + platform);
+        order.push(`start:${platform}`);
         await new Promise((r) => setTimeout(r, 5));
-        order.push("end:" + platform);
+        order.push(`end:${platform}`);
         live--;
         return { json: FAKE_JSON[platform] };
       };

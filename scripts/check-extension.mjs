@@ -56,8 +56,8 @@ await page.addInitScript(() => {
   });
 });
 
-console.log('---- visiting', APP_URL + '/connect');
-await page.goto(APP_URL + '/connect', { waitUntil: 'domcontentloaded' });
+console.log('---- visiting', `${APP_URL}/connect`);
+await page.goto(`${APP_URL}/connect`, { waitUntil: 'domcontentloaded' });
 // Give middleware redirects, content-script injection, and React hydration
 // a moment to settle.
 await page.waitForTimeout(3000);

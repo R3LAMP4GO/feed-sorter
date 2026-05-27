@@ -12,8 +12,8 @@
 //   3. Per cluster: tf-idf over member captions (treating each *cluster* as a
 //      document); pick top-K terms as the niche label.
 
-(function (root) {
-  const sum = (arr) => arr.reduce((a, b) => a + b, 0);
+((root) => {
+  const _sum = (arr) => arr.reduce((a, b) => a + b, 0);
 
   // Float32Array <-> base64 (JSON-safe for IDB; smaller than number[] JSON).
   const f32ToB64 = (vec) => {
@@ -122,12 +122,14 @@
     }
     // Cluster-pair similarity = max member-pair similarity (single-linkage).
     const pairSim = (a, b) => {
-      let best = -Infinity;
+      let best = Number.NEGATIVE_INFINITY;
       for (const i of a) for (const j of b) if (sim[i][j] > best) best = sim[i][j];
       return best;
     };
     while (clusters.length > 1) {
-      let bestSim = -Infinity, bi = -1, bj = -1;
+      let bestSim = Number.NEGATIVE_INFINITY;
+      let bi = -1;
+      let bj = -1;
       for (let i = 0; i < clusters.length; i++) {
         for (let j = i + 1; j < clusters.length; j++) {
           const s = pairSim(clusters[i], clusters[j]);

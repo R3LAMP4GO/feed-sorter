@@ -44,7 +44,8 @@ const ndjsonResponse = (chunks, { ok = true, status = 200 } = {}) => {
 const okStream = (parts) => ndjsonResponse(parts);
 
 describe("chat", () => {
-  let lastUrl, lastInit;
+  let lastUrl;
+  let lastInit;
   const mkFetch = (responder) => async (url, init) => {
     lastUrl = url;
     lastInit = init;
@@ -55,9 +56,9 @@ describe("chat", () => {
 
   it("posts to /api/chat with messages and stream=true; joins NDJSON content", async () => {
     const fetchImpl = mkFetch(() => okStream([
-      JSON.stringify({ model: "gemma4", message: { role: "assistant", content: "Hello " } }) + "\n",
-      JSON.stringify({ model: "gemma4", message: { role: "assistant", content: "world" } }) + "\n",
-      JSON.stringify({ model: "gemma4", done: true, prompt_eval_count: 12, eval_count: 7 }) + "\n",
+      `${JSON.stringify({ model: "gemma4", message: { role: "assistant", content: "Hello " } })}\n`,
+      `${JSON.stringify({ model: "gemma4", message: { role: "assistant", content: "world" } })}\n`,
+      `${JSON.stringify({ model: "gemma4", done: true, prompt_eval_count: 12, eval_count: 7 })}\n`,
     ]));
 
     const r = await chat({
@@ -80,7 +81,7 @@ describe("chat", () => {
 
   it("respects a custom endpoint", async () => {
     const fetchImpl = mkFetch(() => okStream([
-      JSON.stringify({ done: true }) + "\n",
+      `${JSON.stringify({ done: true })}\n`,
     ]));
     await chat({
       endpoint: "http://192.168.1.50:11434/",
@@ -92,8 +93,8 @@ describe("chat", () => {
 
   it("attaches base64 images to the LAST user message", async () => {
     const fetchImpl = mkFetch(() => okStream([
-      JSON.stringify({ message: { content: "ok" } }) + "\n",
-      JSON.stringify({ done: true }) + "\n",
+      `${JSON.stringify({ message: { content: "ok" } })}\n`,
+      `${JSON.stringify({ done: true })}\n`,
     ]));
     await chat({
       messages: [
@@ -113,9 +114,9 @@ describe("chat", () => {
   it("forwards `format: schema` for structured output and parses JSON", async () => {
     const schema = { type: "object", properties: { name: { type: "string" } }, required: ["name"] };
     const fetchImpl = mkFetch(() => okStream([
-      JSON.stringify({ message: { content: '{"name":' } }) + "\n",
-      JSON.stringify({ message: { content: '"Adriano"}' } }) + "\n",
-      JSON.stringify({ done: true, prompt_eval_count: 4, eval_count: 5 }) + "\n",
+      `${JSON.stringify({ message: { content: '{"name":' } })}\n`,
+      `${JSON.stringify({ message: { content: '"Adriano"}' } })}\n`,
+      `${JSON.stringify({ done: true, prompt_eval_count: 4, eval_count: 5 })}\n`,
     ]));
     const r = await chat({
       schema,
@@ -131,8 +132,8 @@ describe("chat", () => {
   it("recovers JSON wrapped in ```json fences", async () => {
     const schema = { type: "object" };
     const fetchImpl = mkFetch(() => okStream([
-      JSON.stringify({ message: { content: '```json\n{"a":1}\n```' } }) + "\n",
-      JSON.stringify({ done: true }) + "\n",
+      `${JSON.stringify({ message: { content: '```json\n{"a":1}\n```' } })}\n`,
+      `${JSON.stringify({ done: true })}\n`,
     ]));
     const r = await chat({ schema, messages: [{ role: "user", content: "x" }], fetchImpl });
     expect(r.json).toEqual({ a: 1 });
@@ -140,8 +141,8 @@ describe("chat", () => {
 
   it("throws when schema is set but model returns invalid JSON", async () => {
     const fetchImpl = mkFetch(() => okStream([
-      JSON.stringify({ message: { content: "not-json at all" } }) + "\n",
-      JSON.stringify({ done: true }) + "\n",
+      `${JSON.stringify({ message: { content: "not-json at all" } })}\n`,
+      `${JSON.stringify({ done: true })}\n`,
     ]));
     await expect(
       chat({ schema: { type: "object" }, messages: [{ role: "user", content: "x" }], fetchImpl })
@@ -199,7 +200,7 @@ describe("chat", () => {
 describe("healthCheck", () => {
   it("returns the model list from /api/tags on 200", async () => {
     const fetchImpl = async (url) => {
-      expect(url).toBe(DEFAULT_ENDPOINT + "/api/tags");
+      expect(url).toBe(`${DEFAULT_ENDPOINT}/api/tags`);
       return {
         ok: true,
         status: 200,
@@ -235,7 +236,7 @@ const groqJsonResponse = (payload, { ok = true, status = 200, headers = null } =
   ok,
   status,
   headers: {
-    get: (k) => (headers && headers[String(k).toLowerCase()]) || null,
+    get: (k) => (headers?.[String(k).toLowerCase()]) || null,
   },
   json: async () => payload,
   text: async () => JSON.stringify(payload),
@@ -249,7 +250,8 @@ const groqChoice = (content, model = DEFAULT_GROQ_MODEL) => groqJsonResponse({
 });
 
 describe("chat (groq provider)", () => {
-  let lastUrl, lastInit;
+  let lastUrl;
+  let lastInit;
   const mkFetch = (responder) => async (url, init) => {
     lastUrl = url;
     lastInit = init;
@@ -435,7 +437,7 @@ describe("chat (provider auto-detect)", () => {
     let seen;
     const fetchImpl = async (url, init) => {
       seen = { url, init };
-      return ndjsonResponse([JSON.stringify({ done: true }) + "\n"]);
+      return ndjsonResponse([`${JSON.stringify({ done: true })}\n`]);
     };
     await chat({
       endpoint: "http://localhost:11434",

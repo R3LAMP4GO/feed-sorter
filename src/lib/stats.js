@@ -25,9 +25,9 @@ export const formatOf = (p) => {
 export const makeScoreOf = (list) => {
   const vphMed = median((list || []).map((p) => p.vph || 0).filter((x) => x > 0));
   return (p) => {
-    const s = Number(p && p._score) || 0;
+    const s = Number(p?._score) || 0;
     if (s > 0) return s;
-    const v = Number(p && p.vph) || 0;
+    const v = Number(p?.vph) || 0;
     if (vphMed > 0 && v > 0) return v / vphMed;
     return 0;
   };
@@ -52,7 +52,8 @@ export const computeHashtagLift = (
 ) => {
   const counts = new Map();
   const sums = new Map();
-  let allSum = 0, allN = 0;
+  let allSum = 0;
+  let allN = 0;
   for (const p of list) {
     const s = scoreOf(p);
     allSum += s; allN++;
@@ -74,7 +75,7 @@ export const computeHashtagLift = (
     const meanWith = sums.get(t) / n;
     const remN = allN - n;
     const meanWithout = remN > 0 ? (allSum - sums.get(t)) / remN : 0;
-    const lift = meanWithout > 0 ? meanWith / meanWithout : (meanWith > 0 ? Infinity : 0);
+    const lift = meanWithout > 0 ? meanWith / meanWithout : (meanWith > 0 ? Number.POSITIVE_INFINITY : 0);
     rows.push({ tag: t, n, lift, meanWith });
   }
   rows.sort((a, b) => b.lift - a.lift);
@@ -149,13 +150,14 @@ export const computeKeywords = (
 ) => {
   const counts = new Map();
   const sums = new Map();
-  let allSum = 0, allN = 0;
+  let allSum = 0;
+  let allN = 0;
   for (const p of list) {
     const s = scoreOf(p);
     allSum += s; allN++;
     const seen = new Set();
     for (const w of captionWords(p.desc || "")) {
-      if (stopwords && stopwords.has(w)) continue;
+      if (stopwords?.has(w)) continue;
       if (seen.has(w)) continue;
       seen.add(w);
       counts.set(w, (counts.get(w) || 0) + 1);
@@ -168,7 +170,7 @@ export const computeKeywords = (
     const meanWith = sums.get(w) / n;
     const remN = allN - n;
     const meanWithout = remN > 0 ? (allSum - sums.get(w)) / remN : 0;
-    const lift = meanWithout > 0 ? meanWith / meanWithout : (meanWith > 0 ? Infinity : 0);
+    const lift = meanWithout > 0 ? meanWith / meanWithout : (meanWith > 0 ? Number.POSITIVE_INFINITY : 0);
     rows.push({ word: w, n, lift, meanWith });
   }
   rows.sort((a, b) => b.n - a.n || (b.lift || 0) - (a.lift || 0));

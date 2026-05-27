@@ -48,7 +48,7 @@ export async function transcribeWithWhisperX(
   if (opts.language) form.append('language', opts.language);
   form.append('align', opts.align === false ? '0' : '1');
 
-  const url = env.WHISPERX_URL.replace(/\/+$/, '') + '/transcribe';
+  const url = `${env.WHISPERX_URL.replace(/\/+$/, '')}/transcribe`;
   const res = await fetch(url, { method: 'POST', body: form });
   if (!res.ok) {
     const errText = await res.text();

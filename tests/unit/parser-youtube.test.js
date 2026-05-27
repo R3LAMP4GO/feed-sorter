@@ -177,6 +177,25 @@ describe('parser-youtube', () => {
         cover: 'https://i.ytimg.com/vi/ZYxwVuT9876/oar2.jpg',
       });
     });
+
+    it('normalizes relative thumbnails and falls back to ytimg when absent', () => {
+      const relativePosts = harvestBrowse({
+        shortsLockupViewModel: {
+          entityId: 'shorts-lockup-RELATIVE123',
+          overlayMetadata: { primaryText: { content: 'Relative thumb' }, secondaryText: { content: '12K views' } },
+          thumbnail: { thumbnails: [{ url: '/vi/RELATIVE123/hqdefault.jpg' }] },
+        },
+      }, { kind: 'shorts-feed', username: null });
+      expect(relativePosts[0].cover).toBe('https://i.ytimg.com/vi/RELATIVE123/hqdefault.jpg');
+
+      const fallbackPosts = harvestBrowse({
+        shortsLockupViewModel: {
+          entityId: 'shorts-lockup-MISSING1234',
+          overlayMetadata: { primaryText: { content: 'Missing thumb' }, secondaryText: { content: '7K views' } },
+        },
+      }, { kind: 'shorts-feed', username: null });
+      expect(fallbackPosts[0].cover).toBe('https://i.ytimg.com/vi/MISSING1234/hqdefault.jpg');
+    });
   });
 
   describe('enrichFromNext', () => {

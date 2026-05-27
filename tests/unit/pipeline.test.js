@@ -82,7 +82,7 @@ const mkAdapters = (overrides = {}) => {
     calls.push(`rewrite:${post.id}`);
     const results = {};
     for (const p of platforms) {
-      onPlatform && onPlatform({ platform: p, status: "ok", result: { data: { hook: "h" } } });
+      onPlatform?.({ platform: p, status: "ok", result: { data: { hook: "h" } } });
       results[p] = { postId: post.id, platform: p, data: { hook: "h", script: "s", cta: "c", hashtags: ["a"], single: "x", thread: ["1", "2"], post: "long?", onScreenText: [] }, warnings: [] };
     }
     return { postId: post.id, model: "gemma4", results, errors: {}, usedVoice: false };
@@ -205,7 +205,7 @@ describe("runRepurposePipeline — order & artifacts", () => {
     await runRepurposePipeline({
       posts: [mkPost({ id: "p1", _score: 5 })],
       minScore: 1, count: 1, adapters,
-      onEvent: (e) => events.push(e.type + (e.step ? ":" + e.step : "")),
+      onEvent: (e) => events.push(e.type + (e.step ? `:${e.step}` : "")),
     });
     expect(events[0]).toBe("health.check");
     expect(events).toContain("health.ok");
@@ -213,8 +213,8 @@ describe("runRepurposePipeline — order & artifacts", () => {
     expect(events).toContain("post.start");
     // step.start/ok pairs for each step
     for (const s of STEPS) {
-      expect(events).toContain("step.start:" + s);
-      expect(events).toContain("step.ok:" + s);
+      expect(events).toContain(`step.start:${s}`);
+      expect(events).toContain(`step.ok:${s}`);
     }
     expect(events).toContain("post.ok");
     expect(events).toContain("batch.end");

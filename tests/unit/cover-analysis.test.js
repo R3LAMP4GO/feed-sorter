@@ -170,7 +170,7 @@ describe("analyzeCover", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1); // no second fetch either
 
     // A different cover URL must miss the cache.
-    await analyzeCover(mkPost({ cover: COVER_URL + "?v=2" }), { chat, fetchImpl, cache });
+    await analyzeCover(mkPost({ cover: `${COVER_URL}?v=2` }), { chat, fetchImpl, cache });
     expect(chat).toHaveBeenCalledTimes(2);
   });
 

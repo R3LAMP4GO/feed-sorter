@@ -7,7 +7,7 @@
 //
 // Exposes window.FeedSorterYouTubeTranscript.
 
-(function () {
+(() => {
   function pickLang(tracks, preferred) {
     preferred = preferred || 'en';
     if (!Array.isArray(tracks) || !tracks.length) return null;
@@ -22,7 +22,7 @@
     if (!track || !track.baseUrl) return null;
     const url = track.baseUrl + (track.baseUrl.indexOf('fmt=') === -1 ? '&fmt=json3' : '');
     const res = await fetch(url, { credentials: 'include' });
-    if (!res.ok) throw new Error('caption fetch ' + res.status);
+    if (!res.ok) throw new Error(`caption fetch ${res.status}`);
     const text = await res.text();
     const Parser = globalThis.FeedSorterYouTubeParser;
     if (!Parser) throw new Error('parser-runtime missing');
@@ -51,7 +51,7 @@
         },
         (resp) => {
           if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-          if (!resp || !resp.ok) return reject(new Error((resp && resp.err) || 'upload-failed'));
+          if (!resp || !resp.ok) return reject(new Error((resp?.err) || 'upload-failed'));
           resolve(resp);
         },
       );

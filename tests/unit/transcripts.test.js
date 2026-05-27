@@ -143,7 +143,7 @@ describe("extractAltText", () => {
 });
 
 describe("fetchFreeTranscript", () => {
-  it("returns null when post has neither captionUrl nor altText", async () => {
+  it("returns null when post has no free transcript source", async () => {
     const fetchImpl = stubFetch("should not be called");
     const result = await fetchFreeTranscript({ id: "x" }, { fetchImpl });
     expect(result).toBeNull();
@@ -196,7 +196,38 @@ describe("fetchFreeTranscript", () => {
     });
   });
 
-  it("falls back to IG alt text when no captionUrl", async () => {
+  it("fetches the best YouTube caption track as JSON3", async () => {
+    const json = JSON.stringify({
+      events: [
+        { tStartMs: 0, segs: [{ utf8: "discipline" }, { utf8: " wins" }] },
+        { tStartMs: 1000, segs: [{ utf8: "over motivation" }] },
+      ],
+    });
+    const seen = [];
+    const fetchImpl = async (url, opts) => {
+      seen.push({ url, opts });
+      return { ok: true, status: 200, async text() { return json; } };
+    };
+    const result = await fetchFreeTranscript(
+      {
+        captionTracks: [
+          { baseUrl: "https://youtube.test/asr?lang=en", languageCode: "en", kind: "asr" },
+          { baseUrl: "https://youtube.test/human?lang=en", languageCode: "en", kind: "" },
+        ],
+      },
+      { fetchImpl },
+    );
+    expect(seen[0].url).toBe("https://youtube.test/human?lang=en&fmt=json3");
+    expect(seen[0].opts.credentials).toBe("include");
+    expect(result).toEqual({
+      text: "discipline wins over motivation",
+      kind: "subtitle",
+      source: "youtube-captions",
+      language: "en",
+    });
+  });
+
+  it("falls back to IG alt text when no caption URL or tracks are present", async () => {
     const post = {
       altText: "Photo by zachking. May be an image of: a dog.",
     };

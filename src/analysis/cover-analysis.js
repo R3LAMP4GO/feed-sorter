@@ -101,7 +101,7 @@ export const fetchCoverBase64 = async (url, { fetchImpl = null, signal = null } 
   try {
     resp = await fetchFn(url, { credentials: "omit", signal });
   } catch (e) {
-    const err = new Error(`cover fetch failed (CORS / network): ${String(e && e.message || e)}`);
+    const err = new Error(`cover fetch failed (CORS / network): ${String(e?.message || e)}`);
     err.name = "CoverFetchError";
     err.cause = e;
     throw err;
@@ -162,7 +162,7 @@ export const crossTabCoverFeature = (posts, getter, label) => {
   if (!Array.isArray(posts) || !posts.length) return { key: label, buckets: [], n: 0 };
   const groups = new Map();
   for (const p of posts) {
-    const ai = p && p.cover_ai;
+    const ai = p?.cover_ai;
     if (!ai) continue;
     const v = getter(ai, p);
     if (v === undefined || v === null) continue;
@@ -201,7 +201,7 @@ export const crossTabCoverFeature = (posts, getter, label) => {
 // the geometric mean of those three lifts.
 export const coverWinRate = (post, allPosts) => {
   if (!post || !post.cover_ai || !Array.isArray(allPosts) || !allPosts.length) return 0;
-  const scored = allPosts.filter((p) => p && p.cover_ai);
+  const scored = allPosts.filter((p) => p?.cover_ai);
   if (!scored.length) return 0;
   const overall = scored.reduce((a, p) => a + (Number(p._score) || 0), 0) / scored.length;
   if (!(overall > 0)) return 0;
@@ -222,7 +222,7 @@ export const coverWinRate = (post, allPosts) => {
   if (!lifts.length) return 0;
   // Geometric mean — keeps the metric multiplicative and bounded.
   const product = lifts.reduce((a, b) => a * b, 1);
-  return Math.pow(product, 1 / lifts.length);
+  return product ** (1 / lifts.length);
 };
 
 export async function analyzeCover(post, opts = {}) {

@@ -194,6 +194,21 @@ function cleanAuthor(value) {
   return str(value).replace(/^@/, '').trim().toLowerCase();
 }
 
+function normalizeThumbnailUrl(value) {
+  const raw = str(value).trim();
+  if (!raw) return '';
+  if (raw.startsWith('//')) return `https:${raw}`;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (raw.startsWith('/vi/') || raw.startsWith('/vi_webp/')) return `https://i.ytimg.com${raw}`;
+  if (raw.startsWith('/')) return `https://www.youtube.com${raw}`;
+  return raw;
+}
+
+function fallbackThumbnailUrl(videoId, quality = 'hqdefault') {
+  const id = str(videoId).trim();
+  return id ? `https://i.ytimg.com/vi/${encodeURIComponent(id)}/${quality}.jpg` : '';
+}
+
 function thumbnailUrlOf(value) {
   if (!value || typeof value !== 'object') return '';
   const arrays = [
@@ -205,10 +220,10 @@ function thumbnailUrlOf(value) {
   ];
   for (const arr of arrays) {
     if (!Array.isArray(arr) || arr.length === 0) continue;
-    const found = arr.map((t) => str(t?.url ?? t?.src)).filter(Boolean).pop();
+    const found = arr.map((t) => normalizeThumbnailUrl(t?.url ?? t?.src)).filter(Boolean).pop();
     if (found) return found;
   }
-  return str(value.thumbnail?.url ?? value.thumbnailUrl ?? '');
+  return normalizeThumbnailUrl(value.thumbnail?.url ?? value.thumbnailUrl ?? '');
 }
 
 function maxCountForKeyword(root, keywordRe, maxDepth = 4) {
@@ -294,7 +309,7 @@ export const playerToPost = (player, pageScope = { kind: 'other', username: null
   if (!nativeId) return null;
   const ownerHandle = firstHandleFrom(micro.ownerProfileUrl);
   const handle = cleanAuthor(ownerHandle || vd.author || micro.ownerChannelName);
-  const cover = thumbnailUrlOf(vd) || thumbnailUrlOf(micro);
+  const cover = thumbnailUrlOf(vd) || thumbnailUrlOf(micro) || fallbackThumbnailUrl(nativeId);
   const surface = pageScope.kind === 'shorts-feed' ? 'shorts-feed' : pageScope.kind;
   return {
     id: ID_PREFIX + nativeId,
@@ -677,7 +692,7 @@ function browseItemToPost(value, pageScope) {
     views: viewsOfBrowseItem(value),
     durationSec: parseDurationSeconds(value.lengthText || value.thumbnailOverlayTimeStatusRenderer?.text),
     isReel: true,
-    cover: str(thumbnailUrlOf(value)),
+    cover: str(thumbnailUrlOf(value) || fallbackThumbnailUrl(nativeId)),
     videoUrl: '',
     url: `https://www.youtube.com/shorts/${nativeId}`,
     surface: pageScope?.kind ?? 'other',

@@ -143,7 +143,7 @@ export const fetchCoverBase64 = async (url, { fetchImpl = null, signal = null } 
   try {
     resp = await fetchFn(url, { credentials: "omit", signal });
   } catch (e) {
-    const err = new Error(`cover fetch failed (CORS / network): ${String(e && e.message || e)}`);
+    const err = new Error(`cover fetch failed (CORS / network): ${String(e?.message || e)}`);
     err.name = "CoverFetchError";
     err.cause = e;
     throw err;
@@ -162,20 +162,19 @@ export const fetchCoverBase64 = async (url, { fetchImpl = null, signal = null } 
 // Compose the user message describing the post. Kept as pure text so the
 // model has stable, deterministic context alongside the attached image.
 export const buildUserContent = (post, { creatorMedian = 0, metric = "likes" } = {}) => {
-  const desc = String((post && post.desc) || "").trim();
-  const transcript = String((post && post.transcript) || "").trim();
-  const score = Number(post && post._score) || 0;
-  const basis = String((post && post._scoreBasis) || "");
-  const surface = String((post && post.surface) || "");
+  const desc = String((post?.desc) || "").trim();
+  const transcript = String((post?.transcript) || "").trim();
+  const score = Number(post?._score) || 0;
+  const basis = String((post?._scoreBasis) || "");
+  const surface = String((post?.surface) || "");
   const fmt = formatOf(post);
-  const author = (post && post.author) || "(unknown)";
-  const v = Number(post && post[metric]) || 0;
+  const author = (post?.author) || "(unknown)";
+  const v = Number(post?.[metric]) || 0;
   const lines = [];
   lines.push(`AUTHOR: @${author}`);
   lines.push(`FORMAT: ${fmt}${surface ? ` · surface=${surface}` : ""}`);
   lines.push(
-    `OUTLIER SCORE: ${score ? score.toFixed(2) + "x" : "n/a"}` +
-    (basis ? ` (basis=${basis})` : "")
+    `OUTLIER SCORE: ${score ? `${score.toFixed(2)}x` : "n/a"}${basis ? ` (basis=${basis})` : ""}`
   );
   if (creatorMedian > 0) {
     const ratio = v > 0 ? (v / creatorMedian).toFixed(2) : "n/a";
@@ -189,7 +188,7 @@ export const buildUserContent = (post, { creatorMedian = 0, metric = "likes" } =
   lines.push("");
   lines.push(`CAPTION:\n${desc || "(no caption)"}`);
   if (transcript) {
-    const trimmed = transcript.length > 1200 ? transcript.slice(0, 1200) + "…" : transcript;
+    const trimmed = transcript.length > 1200 ? `${transcript.slice(0, 1200)}…` : transcript;
     lines.push("");
     lines.push(`TRANSCRIPT:\n${trimmed}`);
   }
@@ -224,8 +223,7 @@ const normalizeDiagnosis = (json, model) => {
   for (const k of ["emotionalDriver", "structuralPattern", "hypothesis"]) {
     if (!out[k]) {
       const e = new Error(
-        `diagnoseOutlier: model returned no '${k}' — likely a non-vision Gemma. ` +
-        `Try pulling 'gemma3:12b' or another multimodal variant.`
+        `diagnoseOutlier: model returned no '${k}' — likely a non-vision Gemma. Try pulling 'gemma3:12b' or another multimodal variant.`
       );
       e.name = "DiagnosisSchemaError";
       throw e;

@@ -109,7 +109,7 @@
   // Profile-info endpoints were added later (bio-first niche cascade,
   // src/lib/niche-signal.js): IG `users/web_profile_info`,
   // legacy `users/<id>/info`, and TT `api/user/detail`.
-  const URL_RE = /\/(api\/v1\/(feed\/user|clips\/user|discover|users\/web_profile_info|users\/[0-9]+\/info)|graphql\/query|api\/(post|recommend|explore|related|user)\/(item_list|detail)|youtubei\/v1\/(player|next|browse|reel\/(reel_item_watch|reel_watch_sequence)))/;
+  const URL_RE = /\/(api\/v1\/(feed\/user|clips\/user|discover|users\/web_profile_info|users\/[0-9]+\/info)|(?:api\/graphql|graphql\/query)|api\/(post|recommend|explore|related|user)\/(item_list|detail)|youtubei\/v1\/(player|next|browse|reel\/(reel_item_watch|reel_watch_sequence)))/;
 
   const post = (payload) => {
     try { window.postMessage({ source: SOURCE, ...payload }, "*"); } catch {}

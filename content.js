@@ -27,9 +27,56 @@
   const posts = new Map();
 
   // Ids first observed in *this browser session*. Used by the
-  // "Session vs All-time" toggle to scope the visible list.
+  // "Session vs All-time" toggle to scope the visible list. Persisted in
+  // window.sessionStorage so a normal page refresh keeps the working set and
+  // new captures keep appending instead of making the overlay look empty.
   /** @type {Set<string>} */
   const sessionIds = new Set();
+  const SESSION_IDS_STORAGE_PREFIX = "fs:sessionIds:";
+  const sessionScopeKey = (scope = pageScope) => {
+    const s = scope || { kind: "other", username: null, videoId: null };
+    const user = s.username ? String(s.username).toLowerCase() : "";
+    // YouTube Shorts changes /shorts/<id> as you scroll. Treat the whole Shorts
+    // player as one accumulating session so prior shorts stay visible and new
+    // ones append, matching TikTok/IG discovery behavior.
+    const sharedShortsSession = PLATFORM.platform === "youtube" && s.kind === "shorts-feed";
+    const video = !sharedShortsSession && s.videoId ? String(s.videoId) : "";
+    return `${PLATFORM.platform}:${s.kind || "other"}:${user}:${video}`;
+  };
+  const sessionIdsStorageKey = (scope = pageScope) => SESSION_IDS_STORAGE_PREFIX + sessionScopeKey(scope);
+  const readStoredSessionIds = (scope = pageScope) => {
+    try {
+      const raw = window.sessionStorage?.getItem(sessionIdsStorageKey(scope));
+      const ids = raw ? JSON.parse(raw) : [];
+      return Array.isArray(ids) ? ids.filter((id) => typeof id === "string" && id) : [];
+    } catch {
+      return [];
+    }
+  };
+  const persistSessionIds = (scope = pageScope) => {
+    try {
+      if (!window.sessionStorage) return;
+      window.sessionStorage.setItem(sessionIdsStorageKey(scope), JSON.stringify([...sessionIds]));
+    } catch {}
+  };
+  const loadStoredSessionIds = (scope = pageScope) => {
+    const ids = readStoredSessionIds(scope);
+    sessionIds.clear();
+    for (const id of ids) sessionIds.add(id);
+    return ids.length;
+  };
+  const rememberSessionId = (id) => {
+    if (!id) return;
+    const before = sessionIds.size;
+    sessionIds.add(id);
+    if (sessionIds.size !== before) persistSessionIds();
+  };
+  const clearStoredSessionIds = (scope = pageScope) => {
+    sessionIds.clear();
+    try {
+      if (window.sessionStorage) window.sessionStorage.removeItem(sessionIdsStorageKey(scope));
+    } catch {}
+  };
 
   // During detail-page snap collection (YT Shorts / TT video), keep posts from
   // videos we advance onto instead of only the URL's starting video.
@@ -58,7 +105,7 @@
 
   // Debounced autosave queues per id (for note/tags typing).
   const metaDebounce = new Map();
-  const flushMetaWrite = (id) => {
+  const _flushMetaWrite = (id) => {
     const t = metaDebounce.get(id);
     if (t) { clearTimeout(t.timer); t.fn(); metaDebounce.delete(id); }
   };
@@ -119,7 +166,7 @@
   // before this script in the manifest). It bundles the per-platform
   // parser, scope detector, URL builders, and IDB/CSV/download conventions.
   // We resolve once at boot and cache so every hot path is a property read.
-  const PLATFORM = (window.__fsPlatform && window.__fsPlatform.getActiveConfig())
+  const PLATFORM = (window.__fsPlatform?.getActiveConfig())
     || null;
   if (!PLATFORM) {
     console.error("[FS] no platform config for host", location.host, "- aborting boot");
@@ -180,20 +227,23 @@
     const next = deriveScope();
     if (next.kind === pageScope.kind && next.username === pageScope.username && next.videoId === pageScope.videoId) return;
     const old = { ...pageScope };
-    const onlyDetailVideoChanged =
-      collector.running &&
+    const detailVideoChanged =
       old.kind === next.kind &&
       old.username === next.username &&
       old.videoId !== next.videoId;
+    const onlyDetailVideoChanged =
+      detailVideoChanged &&
+      (collector.running || (PLATFORM.platform === "youtube" && old.kind === "shorts-feed"));
     pageScope = next;
     // Don't wipe IDB. Just drop the rendered/in-memory view; we'll rehydrate
     // for the new scope below. During snap collection, changing from one
     // short/video URL to the next is expected and must not abort the collector.
     if (!onlyDetailVideoChanged) {
       posts.clear();
+      loadStoredSessionIds(next);
     }
     if (onlyDetailVideoChanged && next.videoId) collectionSeenVideoIds.add(String(next.videoId));
-    collector.abort = collector.running && !onlyDetailVideoChanged ? true : false;
+    collector.abort = !!(collector.running && !onlyDetailVideoChanged );
     collector.reason = null;
     logInfo("scope.change", { from: old, to: pageScope, path: location.pathname, collectorRunning: collector.running, onlyDetailVideoChanged });
     updateHeader();
@@ -240,7 +290,7 @@
   // src/lib/platform-runtime.js, keyed off the active host. Hot-path
   // wrappers below let callers stay terse.
 
-  const num = (v) => (typeof v === "number" ? v : Number(v) || 0);
+  const _num = (v) => (typeof v === "number" ? v : Number(v) || 0);
 
   const platformParser = PLATFORM.parser;
   const surfaceFromUrlTag = (url, tag) =>
@@ -259,6 +309,12 @@
     authorMergeScore(nextAuthor) >= authorMergeScore(prevAuthor) ? (nextAuthor || prevAuthor || "") : (prevAuthor || nextAuthor || "");
   const canonicalNativeId = (post) => String(post?.nativeId || post?.shortcode || post?.id || "").replace(/^(ig|tt|yt)_/, "");
   const isYouTubePost = (post) => post?.platform === "youtube" || /^yt_/.test(String(post?.id || ""));
+  const fallbackYouTubeThumbUrl = (post, quality = "hqdefault") => {
+    if (!isYouTubePost(post)) return "";
+    const native = canonicalNativeId(post);
+    return native ? `https://i.ytimg.com/vi/${encodeURIComponent(native)}/${quality}.jpg` : "";
+  };
+  const displayCoverForPost = (post) => post?.cover || fallbackYouTubeThumbUrl(post) || "";
   const COUNT_TOKEN_RE = /(\d[\d,.\s]*\d|\d)(?:\s*([kmb]|thousand|million|billion))?/i;
   const suffixToMultiplier = (suffix) => {
     const s = String(suffix || "").toLowerCase();
@@ -350,7 +406,7 @@
       const idClass = `${node.id || ""} ${node.className || ""}`;
       const parts = textPartsForElement(node);
       const haystack = `${idClass} ${parts.join(" ")}`;
-      if (excludeRe && excludeRe.test(haystack)) continue;
+      if (excludeRe?.test(haystack)) continue;
       if (!keywordRe.test(haystack)) continue;
       for (const part of parts) out = Math.max(out, parseHumanCount(part));
     }
@@ -399,11 +455,35 @@
     const nativeId = pageScope.videoId || deriveScope().videoId || activeYouTubeShortVideoIdFromDom();
     const candidates = nativeId ? [`yt_${nativeId}`] : fallbackYouTubeShortHydrationIds();
     if (!candidates.length) return 0;
-    const id = candidates.find((candidate) => posts.has(candidate));
-    if (!id) return 0;
-    const prev = posts.get(id);
-    if (!prev) return 0;
-    const resolvedNativeId = nativeId || prev.nativeId || prev.shortcode || String(id).replace(/^yt_/, "");
+    const id = candidates.find((candidate) => posts.has(candidate)) || candidates[0];
+    const resolvedNativeId = nativeId || String(id).replace(/^yt_/, "");
+    const existed = posts.has(id);
+    const prev = posts.get(id) || {
+      id,
+      nativeId: resolvedNativeId,
+      shortcode: resolvedNativeId,
+      author: "",
+      desc: "YouTube Short",
+      title: "YouTube Short",
+      likes: 0,
+      comments: 0,
+      views: 0,
+      mediaType: 2,
+      isReel: true,
+      cover: fallbackYouTubeThumbUrl({ id, nativeId: resolvedNativeId, platform: "youtube" }),
+      videoUrl: "",
+      url: `https://www.youtube.com/shorts/${resolvedNativeId}`,
+      surface: "shorts-feed",
+      platform: "youtube",
+      audio: null,
+      audioClusterId: "",
+      usertags: [],
+      coauthors: [],
+      location: null,
+      accessibilityCaption: "",
+      carouselCount: 0,
+      productType: "video",
+    };
     const metrics = scrapeYouTubeShortMetricsFromDom();
     const patch = {
       platform: "youtube",
@@ -411,19 +491,25 @@
       isReel: true,
       nativeId: prev.nativeId || resolvedNativeId,
       shortcode: prev.shortcode || resolvedNativeId,
+      cover: prev.cover || fallbackYouTubeThumbUrl(prev),
     };
     if (metrics.likes > (prev.likes || 0)) patch.likes = metrics.likes;
     if (metrics.comments > (prev.comments || 0)) patch.comments = metrics.comments;
     if (metrics.views > (prev.views || 0)) patch.views = metrics.views;
-    const changed = Object.entries(patch).some(([key, value]) => prev[key] !== value);
-    if (!changed) return 0;
-    const merged = { ...prev, ...patch, lastSeenAt: Date.now() };
+    const wasSessionVisible = sessionIds.has(id);
+    const changed = !existed || Object.entries(patch).some(([key, value]) => prev[key] !== value);
+    if (!wasSessionVisible) rememberSessionId(id);
+    if (!changed) {
+      if (!wasSessionVisible) render();
+      return wasSessionVisible ? 0 : 1;
+    }
+    const now = Date.now();
+    const merged = { ...prev, ...patch, firstSeenAt: prev.firstSeenAt || now, lastSeenAt: now };
     posts.set(id, merged);
-    sessionIds.add(id);
     if (window.__fsStore) {
       window.__fsStore.bulkUpsert([merged])
         .then((rows) => {
-          const canonical = rows && rows[0];
+          const canonical = rows?.[0];
           if (canonical?.id) posts.set(canonical.id, { ...posts.get(canonical.id), ...canonical });
         })
         .catch((e) => logWarn("youtube.dom-hydrate.store.fail", e, { id }));
@@ -441,7 +527,7 @@
     }
   };
   const isCurrentDetailVideo = (post) => {
-    if (!pageScope.videoId) return true;
+    if (!pageScope.videoId) return false;
     const native = canonicalNativeId(post);
     if (!native) return false;
     if (native === String(pageScope.videoId)) return true;
@@ -496,11 +582,27 @@
   // surface dropdown ("reels" / "profile" / "explore") actually matches.
   const refineSurface = (surface) => {
     if (surface !== "graphql") return surface;
-    const path = (location && location.pathname) || "";
+    const path = (location?.pathname) || "";
     if (/\/reels\/?$/.test(path)) return "reels";
     if (pageScope.kind === "profile") return "profile";
     if (pageScope.kind === "explore") return "explore";
     return surface;
+  };
+
+  const pendingStoreWrites = new Set();
+  const trackStoreWrite = (promise) => {
+    if (!promise || typeof promise.then !== "function") return promise;
+    pendingStoreWrites.add(promise);
+    promise.then(
+      () => pendingStoreWrites.delete(promise),
+      () => pendingStoreWrites.delete(promise),
+    );
+    return promise;
+  };
+  const drainStoreWrites = async () => {
+    const batch = [...pendingStoreWrites];
+    if (!batch.length) return;
+    await Promise.allSettled(batch);
   };
 
   const ingest = (raw, url, tag) => {
@@ -565,7 +667,7 @@
         added++;
       }
       posts.set(p.id, merged);
-      sessionIds.add(p.id);
+      rememberSessionId(p.id);
       toPersist.push(merged);
       // Auto-tag posts collected from the Explore surface so users can
       // tell at a glance where a row originated. Idempotent: only writes
@@ -592,7 +694,7 @@
           .then((n) => { if (n) logDebug("audio.upsert", { n }); })
           .catch((e) => logWarn("audio.upsert.fail", e));
       }
-      window.__fsStore.bulkUpsert(toPersist)
+      trackStoreWrite(window.__fsStore.bulkUpsert(toPersist)
         .then((merged) => {
           let corrected = 0;
           for (const m of merged || []) {
@@ -613,7 +715,7 @@
           }
           if (corrected) render();
         })
-        .catch((e) => logError("store.upsert.fail", e));
+        .catch((e) => logError("store.upsert.fail", e)));
     }
     if (items.length) {
       if (PLATFORM.platform === "youtube") scheduleYouTubeDomHydration("ingest");
@@ -674,11 +776,11 @@
               },
             );
           })
-          .catch((err) => sendResponse({ ok: false, err: String(err && err.message || err) }));
+          .catch((err) => sendResponse({ ok: false, err: String(err?.message || err) }));
         return true; // async response
       }
     });
-  } catch (e) {
+  } catch (_e) {
     // chrome.runtime can be undefined when the extension context is
     // invalidated (e.g. mid-reload). Non-fatal.
   }
@@ -700,7 +802,7 @@
       if (PP && (PP.isInstagramProfileInfoUrl(data.url) || PP.isTikTokProfileInfoUrl(data.url))) {
         try {
           const parsed = PP.parseProfile(JSON.parse(data.body), data.url);
-          if (parsed && parsed.username && window.__fsStore && window.__fsStore.addCreator) {
+          if (parsed?.username && window.__fsStore && window.__fsStore.addCreator) {
             const at = Date.now();
             // Category-as-niche shortcut: IG business accounts carry a
             // category_name ("Real Estate Agent", "Fitness Trainer", etc.)
@@ -992,6 +1094,11 @@
   // growing for this long despite repeated scroll attempts, the page has
   // bottomed out and we stop regardless of any unmet limit.
   const SCROLL_HEIGHT_STALL_MS = 10000;
+  const COLLECT_RESUME_STORAGE_PREFIX = "fs:collectResume:";
+  const COLLECT_RESUME_TTL_MS = 2 * 60 * 60 * 1000;
+  const TIKTOK_EXPLORE_REFRESH_DELAY_MS = 800;
+  const TIKTOK_EXPLORE_RESUME_DELAY_MS = 1200;
+  const TIKTOK_EXPLORE_REFRESH_MAX = 50;
 
   const collector = {
     running: false,
@@ -1000,15 +1107,142 @@
     startedAt: 0,
   };
 
+  const isTikTokExploreScope = (scope = pageScope) =>
+    PLATFORM.platform === "tiktok" && scope && scope.kind === "explore";
+  const isTikTokExplorePage = (scope = pageScope) =>
+    isTikTokExploreScope(scope) && /^\/explore(?:\/|$)/.test(location.pathname || "/");
+  const COLLECT_RESUME_STATE_KEYS = Object.freeze([
+    "limit", "limitCustom", "limitCustomValue", "range", "rangeFrom", "rangeTo",
+    "surface", "scope",
+  ]);
+  const collectResumeStorageKey = (scope = pageScope) =>
+    COLLECT_RESUME_STORAGE_PREFIX + sessionScopeKey(scope);
+  const readCollectResume = (scope = pageScope) => {
+    try {
+      const raw = window.sessionStorage?.getItem(collectResumeStorageKey(scope));
+      const resume = raw ? JSON.parse(raw) : null;
+      if (!resume || typeof resume !== "object") return null;
+      if (Date.now() - (Number(resume.t) || 0) > COLLECT_RESUME_TTL_MS) {
+        window.sessionStorage.removeItem(collectResumeStorageKey(scope));
+        return null;
+      }
+      return resume;
+    } catch {
+      return null;
+    }
+  };
+  const writeCollectResume = (scope = pageScope, patch = {}) => {
+    try {
+      if (!window.sessionStorage) return null;
+      const prev = readCollectResume(scope) || {};
+      const next = { ...prev, ...patch, t: Date.now() };
+      window.sessionStorage.setItem(collectResumeStorageKey(scope), JSON.stringify(next));
+      return next;
+    } catch {
+      return null;
+    }
+  };
+  const clearCollectResume = (scope = pageScope) => {
+    try {
+      if (window.sessionStorage) window.sessionStorage.removeItem(collectResumeStorageKey(scope));
+    } catch {}
+  };
+  const collectResumeStateSnapshot = () => {
+    const snap = {};
+    for (const key of COLLECT_RESUME_STATE_KEYS) snap[key] = state[key];
+    return snap;
+  };
+  const applyCollectResumeState = (resume) => {
+    const snap = resume?.state;
+    if (!snap || typeof snap !== "object") return;
+    for (const key of COLLECT_RESUME_STATE_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(snap, key)) state[key] = snap[key];
+    }
+  };
+  const shouldAutoRefreshTikTokExplore = ({ reason, limit, count, cutoff, cutoffTo, oldest }) => {
+    if (!isTikTokExplorePage()) return false;
+    if (collector.abort && reason === "user-stopped") return false;
+    if (reason !== "end-of-feed" && reason !== "idle-end-of-feed") return false;
+    if (limit > 0 && count >= limit) return false;
+    if (cutoff && oldest && oldest < cutoff) return false;
+    // A bounded custom upper date with no lower bound can only be satisfied by
+    // capturing newer batches too, so refreshes remain useful. With no limit and
+    // no cutoff, TikTok Explore is intentionally treated as an endless source.
+    return cutoffTo >= 0;
+  };
+  const triggerTikTokExploreRefresh = async ({ reason, count, limit, refreshCount }) => {
+    const next = writeCollectResume(pageScope, {
+      active: true,
+      trigger: "tiktok-explore-refresh",
+      count,
+      limit,
+      reason,
+      refreshCount,
+      href: location.href,
+      state: collectResumeStateSnapshot(),
+    });
+    logInfo("collect.refresh", {
+      platform: PLATFORM.platform,
+      scope: pageScope,
+      reason,
+      inScope: count,
+      limit,
+      refreshCount,
+    });
+    setStatus(`refreshing Explore… ${count} collected`);
+    try { await drainStoreWrites(); } catch {}
+    try { await flushPersist(); } catch {}
+    if (collectRefreshTimer) clearTimeout(collectRefreshTimer);
+    collectRefreshTimer = setTimeout(() => {
+      collectRefreshTimer = null;
+      if (!readCollectResume(pageScope)?.active) return;
+      try { location.reload(); } catch (e) { logWarn("collect.refresh.fail", e); }
+    }, TIKTOK_EXPLORE_REFRESH_DELAY_MS);
+    return next;
+  };
+  let collectRefreshTimer = null;
+  let collectResumeTimer = null;
+  const scheduleTikTokExploreResume = (resume = readCollectResume(pageScope)) => {
+    if (!resume || resume.active !== true) return false;
+    if (!isTikTokExplorePage()) {
+      clearCollectResume(pageScope);
+      return false;
+    }
+    applyCollectResumeState(resume);
+    if (collectResumeTimer) clearTimeout(collectResumeTimer);
+    logInfo("collect.resume", {
+      platform: PLATFORM.platform,
+      scope: pageScope,
+      refreshCount: Number(resume.refreshCount || 0),
+      previousCount: Number(resume.count || 0),
+      limit: Number(resume.limit || 0),
+    });
+    setStatus(`resuming Explore… ${Number(resume.count || 0)} collected`);
+    collectResumeTimer = setTimeout(() => {
+      collectResumeTimer = null;
+      const latest = readCollectResume(pageScope);
+      if (!latest || latest.active !== true) return;
+      if (!isTikTokExplorePage()) {
+        clearCollectResume(pageScope);
+        return;
+      }
+      if (collector.running) return;
+      applyCollectResumeState(latest);
+      render();
+      startCollect("auto-refresh");
+    }, TIKTOK_EXPLORE_RESUME_DELAY_MS);
+    return true;
+  };
+
   const oldestInScope = () => {
     const sessionOnly = state.scope === "session";
-    let oldest = Infinity;
+    let oldest = Number.POSITIVE_INFINITY;
     for (const p of posts.values()) {
       if (sessionOnly && !sessionIds.has(p.id)) continue;
       if (state.surface !== "all" && !matchesSurface(p, state.surface)) continue;
       if (p.createTime && p.createTime < oldest) oldest = p.createTime;
     }
-    return oldest === Infinity ? 0 : oldest;
+    return oldest === Number.POSITIVE_INFINITY ? 0 : oldest;
   };
 
   const inScopeCount = () => {
@@ -1027,12 +1261,32 @@
   };
 
   const stopCollect = (reason) => {
-    if (!collector.running) return;
+    clearCollectResume(pageScope);
+    if (collectRefreshTimer) {
+      clearTimeout(collectRefreshTimer);
+      collectRefreshTimer = null;
+    }
+    if (collectResumeTimer) {
+      clearTimeout(collectResumeTimer);
+      collectResumeTimer = null;
+    }
+    if (!collector.running) {
+      setStatus("idle");
+      return;
+    }
     collector.abort = true;
     collector.reason = reason;
   };
 
   const startCollect = async (trigger = "manual") => {
+    if (pageScope.kind === "other") {
+      const nextScope = deriveScope();
+      if (nextScope.kind !== "other") {
+        pageScope = nextScope;
+        loadStoredSessionIds(pageScope);
+        updateHeader();
+      }
+    }
     if (pageScope.kind === "other") {
       logDebug("collect.skip", { reason: "bad-scope", path: location.pathname });
       return;
@@ -1090,10 +1344,14 @@
     let scrolls = 0;
     let maxScrollHeight = document.documentElement.scrollHeight || 0;
     let heightGrewAt = Date.now();
+    if (limit > 0 && lastCount >= limit) collector.reason = "limit-reached";
 
-    while (!collector.abort) {
+    while (!collector.abort && !collector.reason) {
       const beforePath = location.pathname;
       const beforeScope = { ...pageScope };
+      if (strategy.kind === "snap" && PLATFORM.platform === "youtube") {
+        hydrateVisibleYouTubeShortFromDom(scrolls === 0 ? "collect-initial" : "collect-before-advance");
+      }
       const advanced = strategy.advance({ doc: document });
       scrolls++;
       await sleep(STEP_MS);
@@ -1177,7 +1435,8 @@
       // the idle window and overall timeout so the collector keeps
       // scrolling until it actually hits the goal (or truly stalls).
       const belowLimit = limit > 0 && cur < limit;
-      const endlessSnap = strategy.kind === "snap" && strategy.useIdleEnd === false && limit === 0 && !cutoff;
+      const refreshableExplore = isTikTokExplorePage();
+      const endlessSnap = strategy.kind === "snap" && strategy.useIdleEnd === false && limit === 0 && !cutoff && !refreshableExplore;
       const idleBudget = belowLimit ? IDLE_MS_BELOW_LIMIT : IDLE_MS;
       const timeoutBudget = belowLimit || endlessSnap ? COLLECT_TIMEOUT_BELOW_LIMIT_MS : COLLECT_TIMEOUT_MS;
       if (!endlessSnap && Date.now() - stagnantSince > idleBudget) {
@@ -1191,20 +1450,51 @@
     }
     if (collector.abort && !collector.reason) collector.reason = "user-stopped";
 
+    const endCount = inScopeCount();
+    const endReason = collector.reason;
     const endPayload = {
-      reason: collector.reason,
+      reason: endReason,
       scrolls,
-      inScope: inScopeCount(),
+      inScope: endCount,
       total: posts.size,
       durationMs: Date.now() - collector.startedAt,
     };
     logInfo("collect.end", endPayload);
-    setStatus(`done · ${collector.reason}`);
+    setStatus(`done · ${endReason}`);
     collector.running = false;
     collector.abort = false;
     render();
     // Fire-and-forget auto-webhook delta if configured.
     runAutoOnCollect(preIds, endPayload).catch((e) => logWarn("auto.collect.fail", e));
+    const resume = readCollectResume(pageScope);
+    const refreshCount = Number(resume?.refreshCount || 0);
+    const previousResumeCount = Number(resume?.count || 0);
+    const noRefreshProgress = resume?.active === true && endCount <= previousResumeCount &&
+      (endReason === "end-of-feed" || endReason === "idle-end-of-feed");
+    const shouldRefresh = shouldAutoRefreshTikTokExplore({
+      reason: endReason,
+      limit,
+      count: endCount,
+      cutoff,
+      cutoffTo,
+      oldest: oldestInScope(),
+    });
+    if (noRefreshProgress) {
+      clearCollectResume(pageScope);
+      logWarn("collect.refresh.no-progress", { platform: PLATFORM.platform, scope: pageScope, inScope: endCount, refreshCount });
+    } else if (shouldRefresh && refreshCount < TIKTOK_EXPLORE_REFRESH_MAX) {
+      await triggerTikTokExploreRefresh({
+        reason: endReason,
+        count: endCount,
+        limit,
+        refreshCount: refreshCount + 1,
+      });
+    } else if (!shouldRefresh || endReason === "limit-reached" || endReason === "date-cutoff-reached" || endReason === "user-stopped") {
+      clearCollectResume(pageScope);
+    } else if (refreshCount >= TIKTOK_EXPLORE_REFRESH_MAX) {
+      clearCollectResume(pageScope);
+      logWarn("collect.refresh.max", { platform: PLATFORM.platform, scope: pageScope, refreshCount });
+    }
     if (bgRescrapeActive) {
       bgRescrapeActive = false;
       try {
@@ -1346,12 +1636,12 @@
   // -------- UI --------
   const fmt = (n) => {
     if (!n) return "0";
-    if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
-    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
-    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+    if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+    if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
     return String(n);
   };
-  const fmtScore = (s) => (s ? s.toFixed(2) + "x" : "—");
+  const fmtScore = (s) => (s ? `${s.toFixed(2)}x` : "—");
   const fmtDate = (t) => (t ? new Date(t * 1000).toLocaleDateString() : "");
 
   const RANGES = { all: 0, "1w": 7, "1m": 30, "3m": 90, "6m": 180, "1y": 365 };
@@ -1405,10 +1695,10 @@
   const rangeCutoffs = () => {
     if (state.range === "custom") {
       const fromS = state.rangeFrom
-        ? Math.floor(new Date(state.rangeFrom + "T00:00:00").getTime() / 1000)
+        ? Math.floor(new Date(`${state.rangeFrom}T00:00:00`).getTime() / 1000)
         : 0;
       const toS = state.rangeTo
-        ? Math.floor(new Date(state.rangeTo + "T23:59:59").getTime() / 1000)
+        ? Math.floor(new Date(`${state.rangeTo}T23:59:59`).getTime() / 1000)
         : 0;
       return { from: fromS, to: toS };
     }
@@ -1580,7 +1870,7 @@
     for (const k of HASH_KEYS) snap[k] = state[k];
     try {
       const s = b64uEncode(JSON.stringify(snap));
-      const next = "#fs=" + s;
+      const next = `#fs=${s}`;
       if (location.hash !== next) {
         history.replaceState(null, "", location.pathname + location.search + next);
       }
@@ -1827,6 +2117,7 @@
         <span class="fs-batch-count" data-batch-count>0 selected</span>
         <button class="fs-batch-link" data-act="batch-all" title="Select all visible rows">Select all visible</button>
         <button class="fs-batch-link" data-act="batch-none" title="Select none">Select none</button>
+        <button class="fs-icon-btn" data-act="batch-csv-custom" title="Export selected posts as a customizable CSV">CSV</button>
       </div>
       <div class="fs-list" data-list></div>
       <details class="fs-logs" data-logs-details>
@@ -1851,6 +2142,8 @@
         <button class="fs-icon-btn" data-act="collect">Collect all</button>
         <button class="fs-icon-btn" data-act="stop">Stop</button>
         <button class="fs-icon-btn fs-sync-btn" data-act="sync-webapp" data-conn="unknown" title="Sync collected posts to the webapp"><span class="fs-conn-dot" data-conn-dot></span> Sync</button>
+        <button class="fs-icon-btn" data-act="csv" title="Quick CSV export using the current visible order">Quick CSV</button>
+        <button class="fs-icon-btn" data-act="csv-custom" title="Customize CSV columns and order for Excel, Google Sheets, or Numbers">CSV…</button>
         <button class="fs-icon-btn" data-act="bulk-tx-visible" data-bulk-tx-btn title="Transcribe every visible post that doesn't already have a transcript">📝 Bulk transcribe</button>
         <button class="fs-icon-btn fs-bulk-cancel" data-act="bulk-tx-visible-cancel" data-bulk-tx-cancel hidden title="Cancel bulk transcribe">Cancel</button>
         <span class="fs-bulk-status" data-sync-status hidden></span>
@@ -2676,7 +2969,16 @@
         const purgeDb = !!e.shiftKey;
         logInfo("manual.refresh", { had: posts.size, purgeDb });
         posts.clear();
-        sessionIds.clear();
+        clearStoredSessionIds();
+        clearCollectResume(pageScope);
+        if (collectRefreshTimer) {
+          clearTimeout(collectRefreshTimer);
+          collectRefreshTimer = null;
+        }
+        if (collectResumeTimer) {
+          clearTimeout(collectResumeTimer);
+          collectResumeTimer = null;
+        }
         if (collector.running) {
           collector.abort = true;
           collector.reason = "manual-refresh";
@@ -2693,6 +2995,7 @@
         }
       }
       if (act === "csv") { logInfo("export.csv", { rows: filtered().length }); exportCSV(); }
+      if (act === "csv-custom") { e.preventDefault(); openCsvExportModal(); }
       if (act === "sync-webapp" || act === "batch-sync") {
         e.preventDefault();
         // If we know we're not connected, route the user to /connect instead
@@ -2700,8 +3003,8 @@
         const btn = e.target.closest('[data-act="sync-webapp"]');
         if (btn && btn.getAttribute("data-conn") === "off") {
           fsSettingsReadStg([FS_SETTINGS_KEYS.appUrl]).then((stg) => {
-            const appUrl = (stg[FS_SETTINGS_KEYS.appUrl] || FS_SETTINGS_DEFAULTS.appUrl).replace(/\/+$/, "");
-            window.open(appUrl + "/connect", "_blank", "noopener");
+            const appUrl = fsNormalizeManagedUrl(stg[FS_SETTINGS_KEYS.appUrl], "app");
+            window.open(`${appUrl}/connect`, "_blank", "noopener");
           });
           setStatus("opening web app to connect…");
           return;
@@ -2713,7 +3016,7 @@
         // (the SW lives in chrome-extension origin and can't see this DB).
         // We pass the rows directly in the sync message.
         const totalKnown = (typeof filtered === "function" ? filtered().length : 0);
-        console.groupCollapsed("%c[FeedSorter] sync \u2192 web app", "color:#16a34a;font-weight:600", "~" + totalKnown + " tracked posts");
+        console.groupCollapsed("%c[FeedSorter] sync \u2192 web app", "color:#16a34a;font-weight:600", `~${totalKnown} tracked posts`);
         console.log("endpoint: POST /v1/posts/sync");
         // Guard against "Extension context invalidated" — thrown when the
         // extension was reloaded but this tab still has the old content
@@ -2734,22 +3037,22 @@
           if (chrome.runtime.lastError) {
             const msg = chrome.runtime.lastError.message;
             const ctxLost = /context invalidated|extension context/i.test(msg);
-            setStatus(ctxLost ? "reload this tab \u2014 extension was updated" : ("sync failed: " + msg));
+            setStatus(ctxLost ? "reload this tab \u2014 extension was updated" : (`sync failed: ${msg}`));
             logWarn("sync.webapp.fail", { err: msg, ctxLost });
             console.error("[FeedSorter] sync transport failed", msg, ctxLost ? "— refresh this tab." : "");
             console.groupEnd();
             return;
           }
           if (!r || !r.ok) {
-            const err = (r && r.err) || "unknown";
+            const err = (r?.err) || "unknown";
             const hint = err === "not-signed-in" ? " — click the extension icon → Sign in" : "";
-            setStatus("sync failed: " + err + hint);
+            setStatus(`sync failed: ${err}${hint}`);
             logWarn("sync.webapp.fail", { err, hint });
-            console.error("[FeedSorter] sync rejected", { err, status: r && r.status, body: r && r.body });
+            console.error("[FeedSorter] sync rejected", { err, status: r?.status, body: r?.body });
             console.groupEnd();
             return;
           }
-          setStatus(`synced ${r.inserted}/${r.total}` + (r.dropped ? ` (${r.dropped} dropped)` : ""));
+          setStatus(`synced ${r.inserted}/${r.total}${r.dropped ? ` (${r.dropped} dropped)` : ""}`);
           logInfo("sync.webapp.ok", { total: r.total, inserted: r.inserted, dropped: r.dropped, batches: r.batches, ms });
           console.log("%c\u2713 synced", "color:#16a34a", { total: r.total, inserted: r.inserted, dropped: r.dropped, batches: r.batches, ms });
           if (r.sample) console.log("first batch sample (1 post):", r.sample);
@@ -2765,25 +3068,25 @@
           readPosts
             .then((rows) => {
               const all = Array.isArray(rows) ? rows : [];
-              console.log("read from IDB", all.length, "posts; first id =", all[0] && all[0].id);
+              console.log("read from IDB", all.length, "posts; first id =", all[0]?.id);
               if (all.length === 0) {
                 setStatus("sync: no posts in store");
                 logWarn("sync.webapp.empty", { knownVisible: totalKnown });
-                console.warn("[FeedSorter] sync: store is empty (knownVisible=" + totalKnown + "). Are you on a page that has been collected?");
+                console.warn(`[FeedSorter] sync: store is empty (knownVisible=${totalKnown}). Are you on a page that has been collected?`);
                 console.groupEnd();
                 return;
               }
               sendIt(all);
             })
             .catch((err) => {
-              const msg = String(err && err.message || err);
-              setStatus("sync: failed to read store: " + msg);
+              const msg = String(err?.message || err);
+              setStatus(`sync: failed to read store: ${msg}`);
               logWarn("sync.webapp.fail", { err: msg, where: "store-read" });
               console.error("[FeedSorter] failed to read store", msg);
               console.groupEnd();
             });
         } catch (err) {
-          const msg = String(err && err.message || err);
+          const msg = String(err?.message || err);
           setStatus("reload this tab \u2014 extension was updated");
           logWarn("sync.webapp.fail", { err: msg, threw: true });
           console.error("[FeedSorter] sync threw before send — refresh this tab.", msg);
@@ -2818,8 +3121,8 @@
         const src = t.dataset.src || "unknown";
         logInfo("tier.upgrade.click", { src });
         fsSettingsReadStg([FS_SETTINGS_KEYS.appUrl]).then((stg) => {
-          const base = stg[FS_SETTINGS_KEYS.appUrl] || FS_SETTINGS_DEFAULTS.appUrl;
-          window.open(base.replace(/\/+$/, "") + "/billing", "_blank", "noopener");
+          const base = fsNormalizeManagedUrl(stg[FS_SETTINGS_KEYS.appUrl], "app");
+          window.open(`${base}/billing`, "_blank", "noopener");
         });
       }
       if (act === "close-help") hideCheatSheet();
@@ -2843,11 +3146,12 @@
       }
       if (act === "ai-pick") {
         e.preventDefault(); e.stopPropagation();
-        const k = t.dataset.key, v = t.dataset.val;
+        const k = t.dataset.key;
+        const v = t.dataset.val;
         if (k === "hookType") state.hookTypeFilter = state.hookTypeFilter === v ? null : v;
         else if (k === "topic") state.topicFilter = state.topicFilter === v ? null : v;
         else if (k === "angle") state.angleFilter = state.angleFilter === v ? null : v;
-        logInfo("filter.change", { key: k + "Filter", to: v });
+        logInfo("filter.change", { key: `${k}Filter`, to: v });
         syncHash(); render();
       }
       if (act === "pattern-pick") {
@@ -2897,7 +3201,7 @@
         e.preventDefault(); e.stopPropagation();
         const id = t.dataset.id;
         const p = posts.get(id);
-        if (p && p.transcript) {
+        if (p?.transcript) {
           navigator.clipboard.writeText(p.transcript).then(
             () => setStatus("transcript copied"),
             (err) => logWarn("transcript.copy.fail", err),
@@ -2948,6 +3252,10 @@
         logInfo("export.csv", { rows: state.selected.size, selectedOnly: true });
         exportCSV({ selectedOnly: true });
       }
+      if (act === "batch-csv-custom") {
+        e.preventDefault();
+        openCsvExportModal({ selectedOnly: true });
+      }
       if (act === "batch-copy") { e.preventDefault(); batchCopyUrls(); }
       if (act === "batch-compare") { e.preventDefault(); openComparePosts(); }
       if (act === "batch-clear") { e.preventDefault(); state.selected.clear(); render(); }
@@ -2968,19 +3276,19 @@
       if (act === "rw-copy") {
         e.preventDefault();
         const platform = t.dataset.platform;
-        const row = _rwModalState.bundle && _rwModalState.bundle.results[platform];
+        const row = _rwModalState.bundle?.results[platform];
         const text = _rwCopyText(platform, row);
         if (text) {
           navigator.clipboard.writeText(text).then(
             () => setRewriteStatus(`copied ${platform}`),
-            (err) => setRewriteStatus(`copy failed: ${String(err && err.message || err)}`),
+            (err) => setRewriteStatus(`copy failed: ${String(err?.message || err)}`),
           );
         }
       }
       if (act === "rw-regen") {
         e.preventDefault();
         const platform = t.dataset.platform;
-        const nudgeEl = els.modal && els.modal.querySelector("[data-rw-nudge]");
+        const nudgeEl = els.modal?.querySelector("[data-rw-nudge]");
         const nudge = nudgeEl ? nudgeEl.value : "";
         rewriteRegenPlatform(_rwModalState.postId, platform, nudge);
       }
@@ -2993,7 +3301,7 @@
       if (act === "pipeline-run") {
         e.preventDefault();
         const inp = (els.root || document).querySelector('[data-ctl="pipelineTopN"]');
-        const n = Math.max(1, Math.min(50, Number(inp && inp.value) || 10));
+        const n = Math.max(1, Math.min(50, Number(inp?.value) || 10));
         runPipelineFromUI(n).catch((err) => logError("pipeline.fail", err));
       }
       if (act === "pl-cancel") { e.preventDefault(); cancelPipelineFromUI(); }
@@ -3151,7 +3459,7 @@
         if (chip && els.soundsPanel.contains(chip)) {
           e.preventDefault();
           const k = chip.dataset.soundChip;
-          const key = "audio" + k[0].toUpperCase() + k.slice(1);
+          const key = `audio${k[0].toUpperCase()}${k.slice(1)}`;
           state[key] = !state[key];
           logInfo("filter.change", { key, to: state[key] });
           renderSounds();
@@ -3259,8 +3567,8 @@
     });
     window.addEventListener("mousemove", (e) => {
       if (!dragging) return;
-      root.style.left = Math.max(0, e.clientX - dragging.dx) + "px";
-      root.style.top = Math.max(0, e.clientY - dragging.dy) + "px";
+      root.style.left = `${Math.max(0, e.clientX - dragging.dx)}px`;
+      root.style.top = `${Math.max(0, e.clientY - dragging.dy)}px`;
       root.style.right = "auto";
     });
     window.addEventListener("mouseup", () => (dragging = null));
@@ -3269,9 +3577,19 @@
     let hoverTimer = null;
     let hoveredLink = null;
     const restoreImg = (link) => {
-      const cover = link.dataset.cover || "";
+      const cover = link.dataset.cover || link.dataset.fallbackCover || "";
       link.innerHTML = `<img class="fs-thumb" src="${escHTML(cover)}" referrerpolicy="no-referrer" loading="lazy" />`;
     };
+    els.list.addEventListener("error", (e) => {
+      const img = e.target?.closest?.("img.fs-thumb");
+      if (!img || !els.list.contains(img)) return;
+      const link = img.closest(".fs-thumb-link");
+      const fallback = link?.dataset?.fallbackCover || "";
+      if (!fallback || img.dataset.fallbackTried === "1" || img.src === fallback) return;
+      img.dataset.fallbackTried = "1";
+      img.src = fallback;
+      if (link) link.dataset.cover = fallback;
+    }, true);
     // Render the preview video inside a CLOSED shadow root so 3rd-party
     // browser extensions (video downloaders, transcribers) can't see the
     // <video> element and inject their own hover buttons over our row.
@@ -3321,7 +3639,7 @@
 
     // -------- keyboard shortcuts --------
     document.addEventListener("keydown", (e) => {
-      if (e.target && e.target.matches && e.target.matches("input,textarea,select")) return;
+      if (e.target?.matches?.("input,textarea,select")) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const list = filtered();
       const setFocus = (idx) => {
@@ -3420,8 +3738,25 @@
     whisperx: "fs.dev.whisperx_url",
   };
   const FS_SETTINGS_DEFAULTS = {
-    apiBase: "http://localhost:8787",
-    appUrl: "http://localhost:3000",
+    apiBase: "https://api-production-5667.up.railway.app",
+    appUrl: "https://web-production-4e825.up.railway.app",
+  };
+  const fsNormalizeManagedUrl = (value, kind) => {
+    const raw = String(value || "").trim().replace(/\/+$/, "");
+    if (!raw) return kind === "api" ? FS_SETTINGS_DEFAULTS.apiBase : FS_SETTINGS_DEFAULTS.appUrl;
+    try {
+      const u = new URL(raw);
+      if (kind === "api" && u.hostname === "api.feedsorter.app") return FS_SETTINGS_DEFAULTS.apiBase;
+      if (kind === "app" && (u.hostname === "app.feedsorter.app" || u.hostname === "feedsorter.app")) return FS_SETTINGS_DEFAULTS.appUrl;
+    } catch (_) {}
+    return raw;
+  };
+  const fsDeriveAppUrl = (apiBaseUrl) => {
+    try {
+      const u = new URL(apiBaseUrl);
+      if (u.hostname === "localhost" || u.hostname === "127.0.0.1") return `http://${u.hostname}:3000`;
+    } catch (_) {}
+    return FS_SETTINGS_DEFAULTS.appUrl;
   };
   const fsSettingsSendBg = (cmd, payload) => new Promise((resolve) => {
     try {
@@ -3430,7 +3765,7 @@
         resolve(r || { ok: false });
       });
     } catch (err) {
-      resolve({ ok: false, err: String(err && err.message || err) });
+      resolve({ ok: false, err: String(err?.message || err) });
     }
   });
   const fsSettingsReadStg = (keys) => new Promise((resolve) => {
@@ -3447,8 +3782,8 @@
       FS_SETTINGS_KEYS.apiBase, FS_SETTINGS_KEYS.appUrl,
       FS_SETTINGS_KEYS.groq, FS_SETTINGS_KEYS.openai, FS_SETTINGS_KEYS.whisperx,
     ]);
-    const apiBase = stg[FS_SETTINGS_KEYS.apiBase] || FS_SETTINGS_DEFAULTS.apiBase;
-    const appUrl = stg[FS_SETTINGS_KEYS.appUrl] || FS_SETTINGS_DEFAULTS.appUrl;
+    const apiBase = fsNormalizeManagedUrl(stg[FS_SETTINGS_KEYS.apiBase], "api");
+    const appUrl = fsNormalizeManagedUrl(stg[FS_SETTINGS_KEYS.appUrl], "app");
     const groq = stg[FS_SETTINGS_KEYS.groq] || "";
     const openaiKey = stg[FS_SETTINGS_KEYS.openai] || "";
     const whisperx = stg[FS_SETTINGS_KEYS.whisperx] || "";
@@ -3472,10 +3807,10 @@
 
         <h4>Endpoints</h4>
         <label>API base URL</label>
-        <input type="url" data-fs-input="apiBase" value="${fsSettingsEscAttr(apiBase)}" placeholder="http://localhost:8787">
+        <input type="url" data-fs-input="apiBase" value="${fsSettingsEscAttr(apiBase)}" placeholder="https://api-production-5667.up.railway.app">
         <div class="fs-help">Where the extension sends sync + transcribe.</div>
         <label>Web app URL</label>
-        <input type="url" data-fs-input="appUrl" value="${fsSettingsEscAttr(appUrl)}" placeholder="http://localhost:3000">
+        <input type="url" data-fs-input="appUrl" value="${fsSettingsEscAttr(appUrl)}" placeholder="https://web-production-4e825.up.railway.app">
         <div class="fs-help">Used by the &ldquo;Sign in / Connect&rdquo; button.</div>
 
         <h4>Dev keys <span class="muted">(stored in chrome.storage.local)</span></h4>
@@ -3502,7 +3837,7 @@
       const emailEl = m.querySelector("[data-fs-conn-email]");
       const tierEl = m.querySelector("[data-fs-conn-tier]");
       if (!cfg || !cfg.token) {
-        dot && dot.setAttribute("data-state", "off");
+        dot?.setAttribute("data-state", "off");
         statusEl.textContent = "Not signed in";
         emailEl.textContent = "";
         tierEl.hidden = true;
@@ -3510,14 +3845,14 @@
       }
       const me = await fsSettingsSendBg("api.request", { path: "/v1/me" });
       if (me.ok && me.body && me.body.id) {
-        dot && dot.setAttribute("data-state", "on");
+        dot?.setAttribute("data-state", "on");
         statusEl.textContent = "Connected";
         emailEl.textContent = me.body.email || "";
         tierEl.textContent = me.body.tier || "free";
         tierEl.hidden = false;
         tierEl.classList.toggle("fs-tier-pro", me.body.tier === "pro" || me.body.tier === "studio");
       } else {
-        dot && dot.setAttribute("data-state", "off");
+        dot?.setAttribute("data-state", "off");
         statusEl.textContent = me.status === 401 ? "Session expired" : "Reachable, not signed in";
         emailEl.textContent = me.err || "";
         tierEl.hidden = true;
@@ -3533,8 +3868,8 @@
       const status = m.querySelector("[data-fs-settings-status]");
       const v = (k) => m.querySelector(`[data-fs-input="${k}"]`).value.trim();
       if (act === "fs-settings-save") {
-        const apiVal = v("apiBase") || FS_SETTINGS_DEFAULTS.apiBase;
-        const appVal = v("appUrl") || FS_SETTINGS_DEFAULTS.appUrl;
+        const apiVal = fsNormalizeManagedUrl(v("apiBase"), "api");
+        const appVal = fsNormalizeManagedUrl(v("appUrl"), "app");
         await fsSettingsWriteStg({
           [FS_SETTINGS_KEYS.apiBase]: apiVal,
           [FS_SETTINGS_KEYS.appUrl]: appVal,
@@ -3560,12 +3895,16 @@
         status.textContent = "✓ cleared";
         setTimeout(() => (status.textContent = ""), 2000);
       } else if (act === "fs-settings-signin") {
-        const stored = await fsSettingsReadStg([FS_SETTINGS_KEYS.appUrl]);
-        const target = (stored[FS_SETTINGS_KEYS.appUrl] || FS_SETTINGS_DEFAULTS.appUrl) + "/connect";
-        window.open(target, "_blank", "noopener");
+        const stored = await fsSettingsReadStg([FS_SETTINGS_KEYS.apiBase, FS_SETTINGS_KEYS.appUrl]);
+        const appUrl = stored[FS_SETTINGS_KEYS.appUrl]
+          ? fsNormalizeManagedUrl(stored[FS_SETTINGS_KEYS.appUrl], "app")
+          : fsDeriveAppUrl(fsNormalizeManagedUrl(stored[FS_SETTINGS_KEYS.apiBase], "api"));
+        window.open(`${appUrl}/connect`, "_blank", "noopener");
       } else if (act === "fs-settings-open-web") {
-        const stored = await fsSettingsReadStg([FS_SETTINGS_KEYS.appUrl]);
-        const target = stored[FS_SETTINGS_KEYS.appUrl] || FS_SETTINGS_DEFAULTS.appUrl;
+        const stored = await fsSettingsReadStg([FS_SETTINGS_KEYS.apiBase, FS_SETTINGS_KEYS.appUrl]);
+        const target = stored[FS_SETTINGS_KEYS.appUrl]
+          ? fsNormalizeManagedUrl(stored[FS_SETTINGS_KEYS.appUrl], "app")
+          : fsDeriveAppUrl(fsNormalizeManagedUrl(stored[FS_SETTINGS_KEYS.apiBase], "api"));
         window.open(target, "_blank", "noopener");
       }
     });
@@ -3682,7 +4021,7 @@
           badges.push(`<span class="fs-cmp-diff neutral">${escHTML(fmt2)}</span>`);
         }
       }
-      const audio = p.audio ? `${escHTML(p.audio.title || "audio")}${p.audio.artist ? " · " + escHTML(p.audio.artist) : ""}` : "—";
+      const audio = p.audio ? `${escHTML(p.audio.title || "audio")}${p.audio.artist ? ` · ${escHTML(p.audio.artist)}` : ""}` : "—";
       const mediaHTML = p.videoUrl
         ? `<video src="${escHTML(p.videoUrl)}" muted loop playsinline preload="metadata" controls></video>`
         : `<img src="${escHTML(p.cover)}" referrerpolicy="no-referrer" />`;
@@ -3697,8 +4036,8 @@
           <span class="k">Views</span><span class="v">${fmt(p.views || 0)}</span>
           <span class="k">Comments</span><span class="v">${fmt(p.comments || 0)}</span>
           <span class="k">CPR</span><span class="v">${(p.cpr || 0).toFixed(1)}</span>
-          <span class="k">Velocity</span><span class="v">${p.velocityReady || p.snapshotCount > 1 || (p.snapshotCount > 0 && p.lastSeenAt > p.firstSeenAt) ? fmt(Math.round(p.velocityViewsPerHr || 0)) + "/hr" : "—"}</span>
-          <span class="k">Duration</span><span class="v">${dur ? dur + "s" : "—"}</span>
+          <span class="k">Velocity</span><span class="v">${p.velocityReady || p.snapshotCount > 1 || (p.snapshotCount > 0 && p.lastSeenAt > p.firstSeenAt) ? `${fmt(Math.round(p.velocityViewsPerHr || 0))}/hr` : "—"}</span>
+          <span class="k">Duration</span><span class="v">${dur ? `${dur}s` : "—"}</span>
           <span class="k">Caption len</span><span class="v">${capLens[i]}</span>
         </div>
         <div class="fs-cmp-meta">Audio: ${audio}</div>
@@ -3712,7 +4051,7 @@
     const body = `
       <div style="color:#a8a9b3;margin-bottom:8px;font-size:11px">${subtitle}</div>
       <div class="fs-cmp-grid" style="--fs-cmp-n:${enriched.length}">${cols}</div>`;
-    openModal(`Compare posts`, body);
+    openModal("Compare posts", body);
     logInfo("compare.posts.open", { n: enriched.length, sameAuthor: allSameAuthor });
   };
 
@@ -3720,16 +4059,21 @@
   // x = createTime (unix s), y = log10(likes+1). One color per profile;
   // dashed horizontal line per profile at its median log10(likes+1).
   const buildCompareChart = (series) => {
-    const W = 720, H = 280;
+    const W = 720;
+    const H = 280;
     const pad = { l: 44, r: 12, t: 12, b: 28 };
-    const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
-    let xs = [], ys = [];
+    const iw = W - pad.l - pad.r;
+    const ih = H - pad.t - pad.b;
+    const xs = [];
+    const ys = [];
     for (const s of series) for (const p of s.points) { xs.push(p.t); ys.push(p.y); }
     if (!xs.length) {
       return `<svg class="fs-cmp-chart" viewBox="0 0 ${W} ${H}"><text x="${W/2}" y="${H/2}" fill="#a8a9b3" text-anchor="middle" font-size="12">No data</text></svg>`;
     }
-    const xMin = Math.min(...xs), xMax = Math.max(...xs);
-    const yMin = 0, yMax = Math.max(...ys, 1);
+    const xMin = Math.min(...xs);
+    const xMax = Math.max(...xs);
+    const yMin = 0;
+    const yMax = Math.max(...ys, 1);
     const sx = (t) => pad.l + ((t - xMin) / Math.max(xMax - xMin, 1)) * iw;
     const sy = (y) => pad.t + ih - ((y - yMin) / Math.max(yMax - yMin, 1)) * ih;
     // Y gridlines at every integer power of 10 within range.
@@ -3737,7 +4081,7 @@
     for (let v = Math.floor(yMin); v <= Math.ceil(yMax); v++) {
       const yy = sy(v);
       grid.push(`<line x1="${pad.l}" x2="${W - pad.r}" y1="${yy}" y2="${yy}" stroke="#2a2b38" stroke-width="1"/>`);
-      grid.push(`<text x="${pad.l - 6}" y="${yy + 3}" fill="#a8a9b3" font-size="10" text-anchor="end">${Math.round(Math.pow(10, v)).toLocaleString()}</text>`);
+      grid.push(`<text x="${pad.l - 6}" y="${yy + 3}" fill="#a8a9b3" font-size="10" text-anchor="end">${Math.round(10 ** v).toLocaleString()}</text>`);
     }
     // X axis: 4 evenly spaced date ticks.
     const xTicks = [];
@@ -3748,7 +4092,7 @@
       xTicks.push(`<line x1="${xx}" x2="${xx}" y1="${pad.t}" y2="${pad.t + ih}" stroke="#2a2b38" stroke-width="1"/>`);
     }
     const dotsAndLines = series.map((s) => {
-      const dots = s.points.map((p) => `<circle cx="${sx(p.t).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="3" fill="${s.color}" opacity="0.85"><title>@${s.username}\n${new Date(p.t * 1000).toLocaleDateString()}\n${Math.round(Math.pow(10, p.y) - 1).toLocaleString()} likes</title></circle>`).join("");
+      const dots = s.points.map((p) => `<circle cx="${sx(p.t).toFixed(1)}" cy="${sy(p.y).toFixed(1)}" r="3" fill="${s.color}" opacity="0.85"><title>@${s.username}\n${new Date(p.t * 1000).toLocaleDateString()}\n${Math.round(10 ** p.y - 1).toLocaleString()} likes</title></circle>`).join("");
       const med = s.medianY;
       const medLine = Number.isFinite(med)
         ? `<line x1="${pad.l}" x2="${W - pad.r}" y1="${sy(med).toFixed(1)}" y2="${sy(med).toFixed(1)}" stroke="${s.color}" stroke-width="1" stroke-dasharray="4 3" opacity="0.7"/>`
@@ -3807,7 +4151,7 @@
         count: rows.length,
         median: med,
         p90,
-        medianY: likeArr.length ? Math.log10(med + 1) : NaN,
+        medianY: likeArr.length ? Math.log10(med + 1) : Number.NaN,
         topFormat: topFormat && topFormat[1] > 0 ? `${topFormat[0]} (${topFormat[1]})` : "—",
       });
     }
@@ -3852,10 +4196,10 @@
     if (q) {
       list = list.filter((p) => {
         const m = getMetaSync(p.id);
-        const tagHay = m && m.tags ? " " + m.tags.join(" ") : "";
-        const noteHay = m && m.note ? " " + m.note : "";
-        const txHay = p.transcript ? " " + p.transcript : "";
-        const hay = ((p.desc || "") + " @" + (p.author || "") + tagHay + noteHay + txHay).toLowerCase();
+        const tagHay = m?.tags ? ` ${m.tags.join(" ")}` : "";
+        const noteHay = m?.note ? ` ${m.note}` : "";
+        const txHay = p.transcript ? ` ${p.transcript}` : "";
+        const hay = (`${p.desc || ""} @${p.author || ""}${tagHay}${noteHay}${txHay}`).toLowerCase();
         return hay.includes(q);
       });
     }
@@ -3869,26 +4213,26 @@
       list = list.filter((p) => hasNote(p.id));
     }
     if (state.hasTranscript) {
-      list = list.filter((p) => !!(p.transcript && p.transcript.trim()));
+      list = list.filter((p) => !!(p.transcript?.trim()));
     }
     if (state.hashtagFilter) {
-      const re = new RegExp("#" + state.hashtagFilter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?![\\w_])", "i");
+      const re = new RegExp(`#${state.hashtagFilter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w_])`, "i");
       list = list.filter((p) => re.test(p.desc || ""));
     }
     if (state.keywordFilter) {
       // Whole-word, case-insensitive caption match. Used by the Stats
       // keyword chips as a lightweight "filter by niche term".
       const esc = state.keywordFilter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const re = new RegExp("(?:^|[^\\w])" + esc + "(?![\\w])", "i");
+      const re = new RegExp(`(?:^|[^\\w])${esc}(?![\\w])`, "i");
       list = list.filter((p) => re.test(p.desc || ""));
     }
     if (state.nicheFilter) {
       list = list.filter((p) => p && p.niche === state.nicheFilter);
     }
     if (state.formatFilter) {
-      list = list.filter((p) => p && p.format === state.formatFilter);
+      list = list.filter((p) => p && (p.format || p.visualFormat || p.contentFormat) === state.formatFilter);
     }
-    if (state.hasAi) list = list.filter((p) => !!(p.ai && p.ai.hook));
+    if (state.hasAi) list = list.filter((p) => !!(p.ai?.hook));
     if (state.hookTypeFilter) list = list.filter((p) => p.ai && p.ai.hookType === state.hookTypeFilter);
     if (state.topicFilter) list = list.filter((p) => p.ai && p.ai.topic === state.topicFilter);
     if (state.angleFilter) list = list.filter((p) => p.ai && p.ai.angle === state.angleFilter);
@@ -3941,7 +4285,7 @@
       if (!gKey) return "";
       if (gKey === "status") return statusOf(p.id) || "\uffff";
       if (gKey === "hookType" || gKey === "topic" || gKey === "angle") {
-        return (p.ai && p.ai[gKey]) || "\uffff";
+        return (p.ai?.[gKey]) || "\uffff";
       }
       if (gKey === "coverWinRate") {
         const s = p._score || 0;
@@ -3954,7 +4298,8 @@
     };
     list.sort((a, b) => {
       if (gKey) {
-        const ga = groupVal(a), gb = groupVal(b);
+        const ga = groupVal(a);
+        const gb = groupVal(b);
         if (ga !== gb) return ga < gb ? -1 : 1;
       }
       if (key === "relevance") {
@@ -3977,8 +4322,8 @@
         return (Number(b._score) || 0) - (Number(a._score) || 0);
       }
       if (key === "hookType" || key === "topic" || key === "angle") {
-        const va = (a.ai && a.ai[key]) || "\uffff";
-        const vb = (b.ai && b.ai[key]) || "\uffff";
+        const va = (a.ai?.[key]) || "\uffff";
+        const vb = (b.ai?.[key]) || "\uffff";
         if (va !== vb) return va < vb ? -1 : 1;
         return (Number(b._score) || 0) - (Number(a._score) || 0);
       }
@@ -3989,7 +4334,7 @@
     // dropdown change emits filter.change; this confirms the order.
     // Signature includes key+metric+count+top-3 ids so a re-render with
     // identical output stays silent.
-    const sig = `${key}|${state.metric}|${list.length}|${(list[0]||{}).id||""}|${(list[1]||{}).id||""}|${(list[2]||{}).id||""}`;
+    const sig = `${key}|${state.metric}|${list.length}|${list[0]?.id||""}|${list[1]?.id||""}|${list[2]?.id||""}`;
     if (sig !== filtered._lastSig) {
       filtered._lastSig = sig;
       const top = list.slice(0, 3).map((p) => ({
@@ -4107,7 +4452,7 @@
     for (const e of LOG_BUF) push(e);
     out.sort((a, b) => (a.t || 0) - (b.t || 0));
     const lines = out.map((e) => JSON.stringify(e)).join("\n");
-    const blob = new Blob([lines + "\n"], { type: "application/x-ndjson" });
+    const blob = new Blob([`${lines}\n`], { type: "application/x-ndjson" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     const d = new Date();
@@ -4137,16 +4482,16 @@
     try { metaRows = (typeof store.getAllMeta === "function") ? (await store.getAllMeta()) || [] : []; } catch (e) { logWarn("export.library.meta.fail", e); }
     const metaById = new Map();
     for (const m of metaRows) {
-      if (m && m.id) metaById.set(String(m.id), m);
+      if (m?.id) metaById.set(String(m.id), m);
     }
     const merged = posts.map((p) => {
-      const m = metaById.get(String(p && p.id));
+      const m = metaById.get(String(p?.id));
       return m ? { ...p, meta: m } : p;
     });
     const payload = {
       exportedAt: new Date().toISOString(),
       version: 1,
-      platform: PLATFORM && PLATFORM.id || null,
+      platform: PLATFORM?.id || null,
       count: merged.length,
       posts: merged,
     };
@@ -4168,7 +4513,7 @@
   // the settings panel is opened. Cheap — just a count(getAll()).
   const refreshLibraryExportCount = async () => {
     try {
-      const btn = root && root.querySelector('[data-export-library]');
+      const btn = root?.querySelector('[data-export-library]');
       if (!btn || !window.__fsStore || typeof window.__fsStore.getAll !== "function") return;
       const rows = await window.__fsStore.getAll();
       btn.textContent = `Export library (${rows.length})`;
@@ -4213,7 +4558,8 @@
       setStatus("no videos in selection");
       return;
     }
-    let ok = 0, fail = 0;
+    let ok = 0;
+    let fail = 0;
     for (let i = 0; i < targets.length; i++) {
       const p = targets[i];
       setStatus(`downloading ${i + 1}/${targets.length}…`);
@@ -4267,8 +4613,8 @@
     } catch { return "mp4"; }
   };
   const setBulkStatus = (text, showCancel) => {
-    const el = els.root && els.root.querySelector("[data-bulk-status]");
-    const cancel = els.root && els.root.querySelector(".fs-bulk-cancel");
+    const el = els.root?.querySelector("[data-bulk-status]");
+    const cancel = els.root?.querySelector(".fs-bulk-cancel");
     if (el) { el.textContent = text || ""; el.hidden = !text; }
     if (cancel) cancel.hidden = !showCancel;
   };
@@ -4294,7 +4640,7 @@
     for (const r of rows) {
       const p = r.post;
       const tags = (p.desc || "").match(/#[\w\u00C0-\u024F\u1E00-\u1EFF]+/g) || [];
-      const tx = p.transcript || p.captions || (p.audio && p.audio.transcript) || "";
+      const tx = p.transcript || p.captions || (p.audio?.transcript) || "";
       const au = p.audio || {};
       out.push([
         esc(p.author), esc(p.shortcode), esc(p.surface), ymd(p.createTime),
@@ -4343,7 +4689,7 @@
     // Sidecar _meta.csv first, so it lands even if user cancels mid-run.
     try {
       const csvText = buildBatchMetaCSV(items);
-      const dataUrl = "data:text/csv;charset=utf-8;base64," + btoa(unescape(encodeURIComponent(csvText)));
+      const dataUrl = `data:text/csv;charset=utf-8;base64,${btoa(unescape(encodeURIComponent(csvText)))}`;
       const metaName = `${baseFolder}/_meta.csv`;
       const r = await bgDownload(dataUrl, metaName);
       if (!r.ok) logWarn("bulk.meta.fail", { err: r.err, filename: metaName });
@@ -4473,6 +4819,7 @@
 
   const TRANSCRIPT_SOURCE_LABELS = {
     "tiktok-vtt":   "TikTok auto-captions (ASR)",
+    "youtube-captions": "YouTube captions",
     "ig-alt":       "Instagram alt text — describes cover, not audio",
     "groq-whisper": "Groq Whisper-Large-v3-Turbo (cloud, your key)",
     "hf-whisper":   "HuggingFace Whisper-Large-v3 (cloud, your key)",
@@ -4480,6 +4827,7 @@
   };
   const transcriptSourceClass = (src) => {
     if (src === "tiktok-vtt") return "fs-tx-source-vtt";
+    if (src === "youtube-captions") return "fs-tx-source-vtt";
     if (src === "ig-alt") return "fs-tx-source-alt";
     if (src === "groq-whisper") return "fs-tx-source-groq";
     if (src === "hf-whisper") return "fs-tx-source-hf";
@@ -4528,7 +4876,7 @@
     state.transcribeStatus = {
       ok,
       msg: msg || "",
-      model: (body && body.model) || "",
+      model: (body?.model) || "",
       checkedAt: Date.now(),
     };
     if (els.txHealth) {
@@ -4556,8 +4904,10 @@
   const persistTranscript = async (id, body) => {
     if (!window.__fsStore || !window.__fsStore.setPostTranscript) return null;
     try {
-      const merged = await window.__fsStore.setPostTranscript(id, body);
+      let merged = await window.__fsStore.setPostTranscript(id, body);
       if (merged) {
+        const classified = await classifyPostForCsv(merged, { quiet: true });
+        if (classified) merged = classified;
         const prev = posts.get(id);
         if (prev) posts.set(id, { ...prev, ...merged });
       }
@@ -4570,11 +4920,11 @@
 
   const transcribeOne = async (p, { quiet = false } = {}) => {
     if (!p || !p.id) return { ok: false, err: "no-post" };
-    const hasFree = !!(p && (p.captionUrl || p.altText));
+    const hasFree = !!(p && (p.captionUrl || (Array.isArray(p.captionTracks) && p.captionTracks.length) || p.altText));
     if (!p.videoUrl && !hasFree) return { ok: false, err: "no-video-url" };
     const base = sidecarBase();
-    const hasGroq = !!(state.transcriptCloud && state.transcriptCloud.groqApiKey);
-    const hasHf = !!(state.transcriptCloud && state.transcriptCloud.hfApiKey);
+    const hasGroq = !!(state.transcriptCloud?.groqApiKey);
+    const hasHf = !!(state.transcriptCloud?.hfApiKey);
     if (!base && !hasFree && !hasGroq && !hasHf) return { ok: false, err: "no-sidecar-url" };
     if (state.transcribeInflight.has(p.id)) return { ok: false, err: "already-running" };
     state.transcribeInflight.add(p.id);
@@ -4585,9 +4935,9 @@
       const r = await sendBg("transcribe", {
         sidecarUrl: base,
         videoUrl: p.videoUrl,
-        groqApiKey: String((state.transcriptCloud && state.transcriptCloud.groqApiKey) || ""),
-        hfApiKey: String((state.transcriptCloud && state.transcriptCloud.hfApiKey) || ""),
-        hfFallbackOnRateLimit: !!(state.transcriptCloud && state.transcriptCloud.hfFallbackOnRateLimit),
+        groqApiKey: String((state.transcriptCloud?.groqApiKey) || ""),
+        hfApiKey: String((state.transcriptCloud?.hfApiKey) || ""),
+        hfFallbackOnRateLimit: !!(state.transcriptCloud?.hfFallbackOnRateLimit),
         transcribeMode: String(state.transcribeMode || "auto"),
         id: p.id,
         shortcode: p.shortcode,
@@ -4596,6 +4946,7 @@
           platform: p.platform,
           captionUrl: p.captionUrl || null,
           captionFormat: p.captionFormat || null,
+          captionTracks: Array.isArray(p.captionTracks) ? p.captionTracks : null,
           altText: p.altText || null,
           videoUrl: p.videoUrl || null,
         },
@@ -4622,8 +4973,8 @@
   };
 
   const setTxBulkStatus = (msg, busy) => {
-    const el = els.root && els.root.querySelector("[data-tx-status]");
-    const cancel = els.root && els.root.querySelector('[data-act="bulk-transcribe-cancel"]');
+    const el = els.root?.querySelector("[data-tx-status]");
+    const cancel = els.root?.querySelector('[data-act="bulk-transcribe-cancel"]');
     if (el) { el.textContent = msg || ""; el.hidden = !msg; }
     if (cancel) cancel.hidden = !busy;
   };
@@ -4632,7 +4983,11 @@
     if (state.transcribeBulk.running) { setStatus("transcribe batch already running"); return; }
     const N = Number(state.outlierThresh) || 3;
     const list = filtered();
-    const eligible = list.filter((p) => (p._score || 0) >= N && p.videoUrl && !(p.transcript && p.transcript.trim()));
+    const eligible = list.filter((p) => (
+      (p._score || 0) >= N &&
+      (p.videoUrl || p.captionUrl || (Array.isArray(p.captionTracks) && p.captionTracks.length)) &&
+      !(p.transcript?.trim())
+    ));
     const skipped = list.length - eligible.length;
     logInfo("transcribe.bulk.start", { thresh: N, eligible: eligible.length, totalView: list.length, skipped });
     if (!eligible.length) { setStatus(`no untranscribed videos in view with score ≥ ${N}×`); return; }
@@ -4683,16 +5038,16 @@
   // free-tier rate limit can't be tripped.
 
   // True if a row has a non-empty transcript already.
-  const _hasTx = (p) => !!(p && p.transcript && String(p.transcript).trim());
+  const _hasTx = (p) => !!(p?.transcript && String(p.transcript).trim());
   // True if a row has any transcribable media.
-  const _hasMedia = (p) => !!(p && (p.captionUrl || p.videoUrl));
+  const _hasMedia = (p) => !!(p && (p.captionUrl || (Array.isArray(p.captionTracks) && p.captionTracks.length) || p.videoUrl));
 
   const visibleEligibleForBulkTx = () => {
     return filtered().filter((p) => !_hasTx(p) && _hasMedia(p));
   };
 
   const updateBulkTxButton = () => {
-    const btn = els.root && els.root.querySelector("[data-bulk-tx-btn]");
+    const btn = els.root?.querySelector("[data-bulk-tx-btn]");
     if (!btn) return;
     // Free tier: hot-swap the bulk-transcribe footer button for an upgrade
     // chip. The root click handler routes data-act="upgrade" to /billing.
@@ -4720,10 +5075,10 @@
   };
 
   const renderBulkTxStatus = () => {
-    const wrap = els.root && els.root.querySelector("[data-bulk-tx-status]");
-    const counts = els.root && els.root.querySelector("[data-bulk-tx-counts]");
-    const tier = els.root && els.root.querySelector("[data-bulk-tx-tier]");
-    const cancel = els.root && els.root.querySelector("[data-bulk-tx-cancel]");
+    const wrap = els.root?.querySelector("[data-bulk-tx-status]");
+    const counts = els.root?.querySelector("[data-bulk-tx-counts]");
+    const tier = els.root?.querySelector("[data-bulk-tx-tier]");
+    const cancel = els.root?.querySelector("[data-bulk-tx-cancel]");
     if (!wrap) return;
     const s = state.bulkTx;
     if (!s.running && !s.last) { wrap.hidden = true; if (cancel) cancel.hidden = true; return; }
@@ -4760,14 +5115,14 @@
     // to the canonical { ok, status, retryAfter, source } the bulk runner expects.
     const adapter = async (p) => {
       const r = await transcribeOne(p, { quiet: true });
-      if (r && r.ok) {
+      if (r?.ok) {
         const src = (r.body && (r.body.source || r.body.engine)) || "unknown";
-        return { ok: true, source: src, text: (r.body && r.body.text) || "" };
+        return { ok: true, source: src, text: (r.body?.text) || "" };
       }
       if (r && r.err === "groq-rate-limit") {
         return { ok: false, status: 429, retryAfter: Number(r.retryAfter) || 1 };
       }
-      return { ok: false, err: (r && r.err) || "unknown" };
+      return { ok: false, err: (r?.err) || "unknown" };
     };
 
     let summary;
@@ -4822,7 +5177,7 @@
   const loadTranscribeConfig = async () => {
     try {
       const r = await chrome.storage.local.get(TRANSCRIBE_KEY);
-      const cfg = r && r[TRANSCRIBE_KEY];
+      const cfg = r?.[TRANSCRIBE_KEY];
       if (cfg && typeof cfg === "object") {
         if (cfg.url) state.transcribeUrl = String(cfg.url);
         if (typeof cfg.mode === "string" && VALID_TRANSCRIBE_MODES.has(cfg.mode)) {
@@ -4843,7 +5198,7 @@
   const loadTranscriptCloudConfig = async () => {
     try {
       const r = await chrome.storage.local.get(TRANSCRIBE_CLOUD_KEY);
-      const cfg = r && r[TRANSCRIBE_CLOUD_KEY];
+      const cfg = r?.[TRANSCRIBE_CLOUD_KEY];
       if (cfg && typeof cfg === "object") {
         state.transcriptCloud = {
           groqApiKey: typeof cfg.groqApiKey === "string" ? cfg.groqApiKey : "",
@@ -4883,12 +5238,12 @@
     if (!key) { setHfHealth(false, "no key set"); return { ok: false }; }
     setHfHealth(null, "checking…");
     const r = await sendBg("hf-test", { apiKey: key });
-    if (r && r.ok) {
+    if (r?.ok) {
       setHfHealth(true, `✔ token valid · ${r.ms || 0}ms`);
       logInfo("transcribe.hf.health.ok", { ms: r.ms });
     } else {
       setHfHealth(false, `✗ ${(r && (r.err || (r.status ? `HTTP ${r.status}` : "unreachable"))) || "unreachable"}`);
-      logWarn("transcribe.hf.health.fail", { err: r && r.err, status: r && r.status });
+      logWarn("transcribe.hf.health.fail", { err: r?.err, status: r?.status });
     }
     return r;
   };
@@ -4898,12 +5253,12 @@
     if (!key) { setGroqHealth(false, "no key set"); return { ok: false }; }
     setGroqHealth(null, "checking…");
     const r = await sendBg("groq-test", { apiKey: key });
-    if (r && r.ok) {
+    if (r?.ok) {
       setGroqHealth(true, `✔ key valid · ${r.ms || 0}ms`);
       logInfo("transcribe.groq.health.ok", { ms: r.ms });
     } else {
       setGroqHealth(false, `✗ ${(r && (r.err || (r.status ? `HTTP ${r.status}` : "unreachable"))) || "unreachable"}`);
-      logWarn("transcribe.groq.health.fail", { err: r && r.err, status: r && r.status });
+      logWarn("transcribe.groq.health.fail", { err: r?.err, status: r?.status });
     }
     return r;
   };
@@ -4913,7 +5268,7 @@
   const loadAiConfig = async () => {
     try {
       const r = await chrome.storage.local.get(AI_KEY);
-      const cfg = r && r[AI_KEY];
+      const cfg = r?.[AI_KEY];
       if (cfg && typeof cfg === "object") {
         // Migration: existing installs without `provider` had only Ollama
         // configured — keep them on Ollama. New installs (no AI_KEY at all)
@@ -4928,9 +5283,9 @@
           visionModel: String(cfg.visionModel || cfg.model || state.ai.visionModel),
           concurrency: Math.max(1, Math.min(16, Number(cfg.concurrency) || state.ai.concurrency)),
           groq: {
-            model: String((cfg.groq && cfg.groq.model) || state.ai.groq.model),
-            fastModel: String((cfg.groq && cfg.groq.fastModel) || state.ai.groq.fastModel),
-            modelsCache: (cfg.groq && cfg.groq.modelsCache && typeof cfg.groq.modelsCache === "object")
+            model: String((cfg.groq?.model) || state.ai.groq.model),
+            fastModel: String((cfg.groq?.fastModel) || state.ai.groq.fastModel),
+            modelsCache: (cfg.groq?.modelsCache && typeof cfg.groq.modelsCache === "object")
               ? { fetchedAt: Number(cfg.groq.modelsCache.fetchedAt) || 0, models: Array.isArray(cfg.groq.modelsCache.models) ? cfg.groq.modelsCache.models : [] }
               : { fetchedAt: 0, models: [] },
           },
@@ -5004,7 +5359,7 @@
   const GROQ_MODELS_CACHE_MS = 60 * 60 * 1000;
   let groqModelsInflight = null;
   const refreshGroqModels = async ({ force = false } = {}) => {
-    const key = String((state.transcriptCloud && state.transcriptCloud.groqApiKey) || "").trim();
+    const key = String((state.transcriptCloud?.groqApiKey) || "").trim();
     if (!key) {
       populateGroqDropdowns([]);
       return { ok: false, err: "no-key" };
@@ -5028,7 +5383,7 @@
           return { ok: false, status: resp.status };
         }
         const raw = await resp.json();
-        const models = Array.isArray(raw && raw.data)
+        const models = Array.isArray(raw?.data)
           ? raw.data.map((m) => (m && typeof m.id === "string" ? m.id : null)).filter(Boolean)
           : [];
         state.ai.groq.modelsCache = { fetchedAt: Date.now(), models };
@@ -5039,7 +5394,7 @@
       } catch (e) {
         logWarn("ai.groq.models.fail", e);
         populateGroqDropdowns(cache.models || []);
-        return { ok: false, err: String(e && e.message || e) };
+        return { ok: false, err: String(e?.message || e) };
       } finally {
         groqModelsInflight = null;
       }
@@ -5052,7 +5407,7 @@
   const loadMeConfig = async () => {
     try {
       const r = await chrome.storage.local.get(ME_KEY);
-      const cfg = r && r[ME_KEY];
+      const cfg = r?.[ME_KEY];
       if (cfg && typeof cfg === "object" && typeof cfg.username === "string") {
         state.me.username = String(cfg.username || "").toLowerCase().replace(/^@/, "").trim();
       }
@@ -5080,13 +5435,13 @@
   // logical model (e.g. state.ai.model = "gemma4") — we rewrite the payload
   // here so callers stay provider-agnostic. For Groq, the model is replaced
   // with the configured main/fast model based on `kind`.
-  const FAST_KINDS_AI = new Set(["hook", "topic", "hookType", "per-post-analysis", "niche-label"]);
+  const _FAST_KINDS_AI = new Set(["hook", "topic", "hookType", "per-post-analysis", "niche-label"]);
   const aiInjectPayload = (payload) => {
     const p = { ...(payload || {}) };
     const provider = state.ai.provider || "ollama";
     if (provider === "groq") {
       p.provider = "groq";
-      p.apiKey = String((state.transcriptCloud && state.transcriptCloud.groqApiKey) || "").trim();
+      p.apiKey = String((state.transcriptCloud?.groqApiKey) || "").trim();
       p.model = state.ai.groq.model || "llama-3.3-70b-versatile";
       p.fastModel = state.ai.groq.fastModel || "llama-3.1-8b-instant";
     } else {
@@ -5122,7 +5477,7 @@
     try {
       let body;
       if (provider === "groq") {
-        const apiKey = String((state.transcriptCloud && state.transcriptCloud.groqApiKey) || "").trim();
+        const apiKey = String((state.transcriptCloud?.groqApiKey) || "").trim();
         if (!apiKey) {
           setAiHealth(false, "✗ no Groq key set");
           logWarn("ai.health.fail", { provider, err: "no-key" });
@@ -5132,9 +5487,9 @@
       } else {
         body = await window.__fsLlm.healthCheck({ provider: "ollama", endpoint: state.ai.endpoint });
       }
-      const models = (body && body.models) || [];
+      const models = (body?.models) || [];
       const want = provider === "groq" ? state.ai.groq.model : state.ai.model;
-      const has = models.some((m) => m === want || m.startsWith(want + ":"));
+      const has = models.some((m) => m === want || m.startsWith(`${want}:`));
       const note = has ? "" : ` · ${want} not available`;
       const label = provider === "groq" ? "Groq" : "Ollama";
       setAiHealth(true, `${label} · ${want} ✓${note}`, models);
@@ -5142,24 +5497,24 @@
       return { ok: true, body };
     } catch (e) {
       const label = provider === "groq" ? "Groq" : "Ollama";
-      setAiHealth(false, `${label} · ✗ ${String(e && e.message || e).slice(0, 80)}`);
-      logWarn("ai.health.fail", { provider, err: String(e && e.message || e) });
-      return { ok: false, err: String(e && e.message || e) };
+      setAiHealth(false, `${label} · ✗ ${String(e?.message || e).slice(0, 80)}`);
+      logWarn("ai.health.fail", { provider, err: String(e?.message || e) });
+      return { ok: false, err: String(e?.message || e) };
     }
   };
   const clearAiCache = async () => {
     try {
       const r = await (window.__fsLlm ? window.__fsLlm.clearCache() : Promise.reject(new Error("llm-bridge unavailable")));
-      const n = (r && r.cleared) || 0;
+      const n = (r?.cleared) || 0;
       setStatus(`AI cache cleared (${n} entr${n === 1 ? "y" : "ies"})`);
       logInfo("ai.cache.cleared", { entries: n });
     } catch (e) {
-      setStatus(`cache clear failed: ${String(e && e.message || e)}`);
+      setStatus(`cache clear failed: ${String(e?.message || e)}`);
       logWarn("ai.cache.clear.fail", e);
     }
   };
 
-  // -------- Per-post LLM analysis (hook + topic) --------
+  // -------- Per-post LLM analysis (hook + middle + CTA + topic) --------
   // Mirrors src/analysis/post-analysis.js — keep schemas/prompts in sync.
   // Calls the SW-resident bridge (window.__fsLlm.chat), which provides the
   // (model, promptHash) cache contract from background.js.
@@ -5169,8 +5524,12 @@
     properties: {
       hook: { type: "string" },
       hookType: { type: "string", enum: HOOK_TYPES },
+      middle: { type: "string" },
+      cta: { type: "string" },
+      ctaType: { type: "string" },
+      niche: { type: "string" },
     },
-    required: ["hook", "hookType"],
+    required: ["hook", "hookType", "middle", "cta", "ctaType", "niche"],
   };
   const TOPIC_SCHEMA = {
     type: "object",
@@ -5181,11 +5540,15 @@
     required: ["topic", "angle"],
   };
   const HOOK_SYSTEM = [
-    "You analyze short-form social-media posts and extract the HOOK.",
+    "You analyze short-form social-media posts and extract the HOOK, MIDDLE, and CTA.",
     "Return strict JSON matching the schema. No commentary, no markdown.",
     "Rules:",
-    "- 'hook' MUST be ≤12 words, verbatim or lightly normalized.",
+    "- 'hook' MUST be ≤12 words, verbatim or lightly normalized from the opening.",
     "- 'hookType' MUST be one of: question, contrarian, listicle, curiosity-gap, stat-drop, story-open, other.",
+    "- 'middle' MUST be a 1-sentence summary of the value/body section, or an empty string if unavailable.",
+    "- 'cta' MUST be the call-to-action text, or an empty string if absent.",
+    "- 'ctaType' MUST be one of: follow, comment, save, share, link-in-bio, visit-profile, none.",
+    "- 'niche' MUST be a 2–4 word lowercase content niche label (e.g. 'shorts editing', 'wellness routines').",
   ].join("\n");
   const TOPIC_SYSTEM = [
     "You analyze short-form social-media posts and extract TOPIC + ANGLE.",
@@ -5194,9 +5557,9 @@
     "- 'angle' is the treatment in 1–4 lowercase words (e.g. myth-busting, how-to, before/after, rant, tutorial, storytime).",
   ].join("\n");
   const buildAiUser = (p) => {
-    const desc = String((p && p.desc) || "").trim();
-    const segs = Array.isArray(p && p.transcriptSegments) ? p.transcriptSegments : null;
-    const head = segs ? segs.slice(0, 3).map((s) => String(s && s.text || "").trim()).filter(Boolean) : [];
+    const desc = String((p?.desc) || "").trim();
+    const segs = Array.isArray(p?.transcriptSegments) ? p.transcriptSegments : null;
+    const head = segs ? segs.slice(0, 3).map((s) => String(s?.text || "").trim()).filter(Boolean) : [];
     const out = [`CAPTION:\n${desc || "(no caption)"}`];
     if (head.length) out.push(`TRANSCRIPT (first ${head.length} segments):\n${head.join(" ")}`);
     return out.join("\n\n");
@@ -5204,9 +5567,9 @@
   // Tiny djb2 (matches src/lib/llm.js promptHash on canonical objects).
   const aiCanon = (v) => {
     if (v === null || typeof v !== "object") return JSON.stringify(v);
-    if (Array.isArray(v)) return "[" + v.map(aiCanon).join(",") + "]";
+    if (Array.isArray(v)) return `[${v.map(aiCanon).join(",")}]`;
     const k = Object.keys(v).sort();
-    return "{" + k.map((kk) => JSON.stringify(kk) + ":" + aiCanon(v[kk])).join(",") + "}";
+    return `{${k.map((kk) => `${JSON.stringify(kk)}:${aiCanon(v[kk])}`).join(",")}}`;
   };
   const aiHash = (payload) => {
     const s = aiCanon(payload);
@@ -5215,9 +5578,9 @@
     return ((h >>> 0).toString(16)).padStart(8, "0");
   };
   const descHashOf = (p) => aiHash({
-    desc: String((p && p.desc) || "").trim(),
-    segs: Array.isArray(p && p.transcriptSegments)
-      ? p.transcriptSegments.slice(0, 3).map((s) => String(s && s.text || "").trim())
+    desc: String((p?.desc) || "").trim(),
+    segs: Array.isArray(p?.transcriptSegments)
+      ? p.transcriptSegments.slice(0, 3).map((s) => String(s?.text || "").trim())
       : [],
   });
   const sanitizeHookType = (t) => HOOK_TYPES.includes(String(t)) ? String(t) : "other";
@@ -5238,11 +5601,12 @@
       return null;
     }
     const dh = descHashOf(p);
-    if (!force && p.ai && p.ai.descHash === dh && p.ai.hook) {
+    const aiFresh = p.ai && p.ai.descHash === dh && p.ai.hook && p.ai.middle !== undefined && p.ai.cta !== undefined && p.ai.niche !== undefined;
+    if (!force && aiFresh) {
       logDebug("ai.analyze.skip", { id: p.id, reason: "cache-fresh" });
       return p.ai;
     }
-    const model = String(state.ai && state.ai.model || "gemma4");
+    const model = String(state.ai?.model || "gemma4");
     const userContent = buildAiUser(p);
     const hookMessages = [
       { role: "system", content: HOOK_SYSTEM },
@@ -5264,12 +5628,18 @@
           kind: "topic", postId: p.id, options: { temperature: 0.1 },
         }),
       ]);
-      const hj = hookR && hookR.json;
-      const tj = topicR && topicR.json;
+      const hj = hookR?.json;
+      const tj = topicR?.json;
       if (!hj || !tj) throw new Error("missing JSON in chat response");
       const ai = {
         hook: trimWords(hj.hook, 12),
         hookType: sanitizeHookType(hj.hookType),
+        middle: String(hj.middle || "").trim(),
+        middleSummary: String(hj.middle || "").trim(),
+        cta: String(hj.cta || "").trim(),
+        ctaType: String(hj.ctaType || "none").trim() || "none",
+        niche: String(hj.niche || hj.nicheLabel || "").toLowerCase().trim(),
+        nicheLabel: String(hj.niche || hj.nicheLabel || "").toLowerCase().trim(),
         topic: String(tj.topic || "").toLowerCase().trim(),
         angle: String(tj.angle || "").toLowerCase().trim(),
         analyzedAt: Date.now(),
@@ -5279,7 +5649,7 @@
       // Merge into in-memory + IDB.
       const merged = { ...p, ai };
       posts.set(p.id, merged);
-      if (window.__fsStore && window.__fsStore.setPostAi) {
+      if (window.__fsStore?.setPostAi) {
         try { await window.__fsStore.setPostAi(p.id, ai); }
         catch (e) { logWarn("ai.analyze.persist.fail", e, { id: p.id }); }
       }
@@ -5296,10 +5666,10 @@
 
   const analyzeOneForUI = async (p) => {
     try {
-      await analyzeOne(p, { force: !!(p.ai && p.ai.descHash) });
+      await analyzeOne(p, { force: !!(p.ai?.descHash) });
       render();
     } catch (e) {
-      setStatus(`analyze failed: ${String(e && e.message || e).slice(0, 80)}`);
+      setStatus(`analyze failed: ${String(e?.message || e).slice(0, 80)}`);
     }
   };
 
@@ -5311,7 +5681,7 @@
       setStatus("no posts with score ≥ 1.5 in current view");
       return;
     }
-    const conc = Math.max(1, Math.min(8, Number(state.ai && state.ai.concurrency) || 2));
+    const conc = Math.max(1, Math.min(8, Number(state.ai?.concurrency) || 2));
     state.aiBatch = { running: true, cancel: false, done: 0, total: targets.length, fail: 0 };
     setAiStatus();
     logInfo("ai.batch.start", { total: targets.length, concurrency: conc });
@@ -5438,7 +5808,7 @@
     const lines = [];
     lines.push(`AUTHOR: @${post.author || "(unknown)"}`);
     lines.push(`FORMAT: ${fmt}${post.surface ? ` · surface=${post.surface}` : ""}`);
-    lines.push(`OUTLIER SCORE: ${score ? score.toFixed(2) + "x" : "n/a"}${basis ? ` (basis=${basis})` : ""}`);
+    lines.push(`OUTLIER SCORE: ${score ? `${score.toFixed(2)}x` : "n/a"}${basis ? ` (basis=${basis})` : ""}`);
     if (creatorMedian > 0) {
       const ratio = v > 0 ? (v / creatorMedian).toFixed(2) : "n/a";
       lines.push(`CREATOR'S MEDIAN ${metric.toUpperCase()} FOR ${fmt.toUpperCase()}: ${Math.round(creatorMedian)} · this post: ${Math.round(v)} (${ratio}×)`);
@@ -5448,7 +5818,7 @@
     lines.push("");
     lines.push(`CAPTION:\n${desc || "(no caption)"}`);
     if (transcript) {
-      const t = transcript.length > 1200 ? transcript.slice(0, 1200) + "…" : transcript;
+      const t = transcript.length > 1200 ? `${transcript.slice(0, 1200)}…` : transcript;
       lines.push(""); lines.push(`TRANSCRIPT:\n${t}`);
     }
     return lines.join("\n");
@@ -5468,7 +5838,7 @@
       e.name = "CoverFetchError";
       throw e;
     }
-    const model = String((state.ai && state.ai.visionModel) || (state.ai && state.ai.model) || "gemma4");
+    const model = String((state.ai?.visionModel) || (state.ai?.model) || "gemma4");
     state.dxInflight.add(p.id);
     logInfo("diagnose.start", { id: p.id, model, cover: p.cover.slice(0, 80) });
     let coverB64;
@@ -5519,7 +5889,7 @@
       }
       const merged = { ...p, diagnosis };
       posts.set(p.id, merged);
-      if (window.__fsStore && window.__fsStore.setPostDiagnosis) {
+      if (window.__fsStore?.setPostDiagnosis) {
         try { await window.__fsStore.setPostDiagnosis(p.id, diagnosis); }
         catch (e) { logWarn("diagnose.persist.fail", e, { id: p.id }); }
       }
@@ -5543,7 +5913,7 @@
       await diagnoseOne(p);
       render();
     } catch (e) {
-      const msg = String(e && e.message || e).slice(0, 120);
+      const msg = String(e?.message || e).slice(0, 120);
       setStatus(`diagnose failed: ${msg}`);
       render();
     }
@@ -5635,13 +6005,13 @@
       e.name = "CoverFetchError";
       throw e;
     }
-    const model = String((state.ai && state.ai.visionModel) || (state.ai && state.ai.model) || "gemma4");
+    const model = String((state.ai?.visionModel) || (state.ai?.model) || "gemma4");
     // Cache key includes cover URL — same rule as task c7de9bca.
     const messages = [
       { role: "system", content: COVER_SYSTEM },
       { role: "user", content: "Classify the cover frame attached to this message." },
     ];
-    const cacheKey = `${model}:${(window.__fsLlmHash ? window.__fsLlmHash({ messages, schema: COVER_SCHEMA, cover: p.cover }) : (model + ":" + p.cover))}`;
+    const cacheKey = `${model}:${(window.__fsLlmHash ? window.__fsLlmHash({ messages, schema: COVER_SCHEMA, cover: p.cover }) : (`${model}:${p.cover}`))}`;
     if (coverAiCache.has(cacheKey)) {
       const cached = coverAiCache.get(cacheKey);
       // Derive the visualFormat rollup (talking-head / info-card / ...) for
@@ -5653,7 +6023,7 @@
         : (p.visualFormat ?? null);
       const merged = { ...p, cover_ai: cached, visualFormat };
       posts.set(p.id, merged);
-      if (window.__fsStore && window.__fsStore.setPostCoverAi) {
+      if (window.__fsStore?.setPostCoverAi) {
         try { await window.__fsStore.setPostCoverAi(p.id, cached); } catch (e) { logWarn("cover.persist.fail", e, { id: p.id }); }
       }
       logInfo("cover.cached", { id: p.id, visualFormat });
@@ -5712,7 +6082,7 @@
         : null;
       const merged = { ...p, cover_ai: coverAi, visualFormat };
       posts.set(p.id, merged);
-      if (window.__fsStore && window.__fsStore.setPostCoverAi) {
+      if (window.__fsStore?.setPostCoverAi) {
         try { await window.__fsStore.setPostCoverAi(p.id, coverAi); }
         catch (e) { logWarn("cover.persist.fail", e, { id: p.id }); }
       }
@@ -5788,7 +6158,7 @@
   ].join("\n");
   const voiceTrunc = (s, n) => {
     const t = String(s || "").trim();
-    return t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t;
+    return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t;
   };
   const buildVoicePrompt = (postsArr, truncChars = 500) => {
     return postsArr.map((p, i) => {
@@ -5799,7 +6169,7 @@
         typeof p.likes === "number" ? `likes=${p.likes}` : null,
         typeof p.views === "number" && p.views ? `views=${p.views}` : null,
       ].filter(Boolean).join(" ");
-      const lines = [`--- POST ${i + 1}${stats ? " (" + stats + ")" : ""} ---`];
+      const lines = [`--- POST ${i + 1}${stats ? ` (${stats})` : ""} ---`];
       lines.push(`CAPTION: ${cap || "(none)"}`);
       if (tx) lines.push(`TRANSCRIPT: ${tx}`);
       return lines.join("\n");
@@ -5823,13 +6193,13 @@
     return out;
   };
   const normalizeVoiceJson = (j) => ({
-    tone: String((j && j.tone) || "").toLowerCase().trim().slice(0, 80),
-    avgSentenceLen: Math.round(voiceClamp(j && j.avgSentenceLen, 1, 80, 12)),
-    signatureWords: voiceDedupe(j && j.signatureWords, 20),
-    emojiRate: Math.round(voiceClamp(j && j.emojiRate, 0, 100, 0) * 100) / 100,
-    openerPatterns: voiceDedupe(j && j.openerPatterns, 8),
-    closerPatterns: voiceDedupe(j && j.closerPatterns, 6),
-    CTAStyle: String((j && j.CTAStyle) || "").trim().slice(0, 200),
+    tone: String((j?.tone) || "").toLowerCase().trim().slice(0, 80),
+    avgSentenceLen: Math.round(voiceClamp(j?.avgSentenceLen, 1, 80, 12)),
+    signatureWords: voiceDedupe(j?.signatureWords, 20),
+    emojiRate: Math.round(voiceClamp(j?.emojiRate, 0, 100, 0) * 100) / 100,
+    openerPatterns: voiceDedupe(j?.openerPatterns, 8),
+    closerPatterns: voiceDedupe(j?.closerPatterns, 6),
+    CTAStyle: String((j?.CTAStyle) || "").trim().slice(0, 200),
   });
   // Reusable system-prompt builder — mirrors buildSystemPrompt() in the ESM
   // module. Exposed on window.__fsVoice so the rewrite generator (next task)
@@ -5983,14 +6353,14 @@
   const _rwTrunc = (s, n) => {
     const t = String(s || "").trim();
     if (!t) return "";
-    return t.length > n ? t.slice(0, n - 1).trimEnd() + "\u2026" : t;
+    return t.length > n ? `${t.slice(0, n - 1).trimEnd()}\u2026` : t;
   };
 
   const buildRewriteUser = (post, platform, nudge) => {
-    const ai = (post && post.ai) || {};
-    const author = String((post && post.author) || "").trim();
-    const caption = _rwTrunc(post && post.desc, 1200);
-    const transcript = _rwTrunc(post && post.transcript, 2000);
+    const ai = (post?.ai) || {};
+    const author = String((post?.author) || "").trim();
+    const caption = _rwTrunc(post?.desc, 1200);
+    const transcript = _rwTrunc(post?.transcript, 2000);
     const lines = [
       `TARGET PLATFORM: ${REWRITE_LABELS[platform]}`,
       "",
@@ -6016,7 +6386,7 @@
   // Resolve the user's OWN voice fingerprint (the one designated as "me").
   // Falls back to null → neutral system prompt.
   const getMyVoice = async () => {
-    const u = String(state.me && state.me.username || "").toLowerCase().trim();
+    const u = String(state.me?.username || "").toLowerCase().trim();
     if (!u) return null;
     if (!window.__fsStore || !window.__fsStore.getVoice) return null;
     try { return (await window.__fsStore.getVoice(u)) || null; }
@@ -6029,7 +6399,7 @@
     if (!window.__fsLlm) throw new Error("rewriteOne: LLM bridge unavailable");
     const voice = await getMyVoice();
     const system = { role: "system", content: buildRewriteSystem(voice) };
-    const model = String(state.ai && state.ai.model || "gemma4");
+    const model = String(state.ai?.model || "gemma4");
     const out = {
       postId: String(post.id), model, generatedAt: 0,
       usedVoice: !!voice, voiceUsername: voice ? voice.username : null,
@@ -6057,14 +6427,14 @@
           warnings: [], durationMs,
         };
         out.results[platform] = row;
-        if (window.__fsStore && window.__fsStore.putRewrite) {
+        if (window.__fsStore?.putRewrite) {
           try { await window.__fsStore.putRewrite(row); }
           catch (e) { logWarn("rewrite.persist.fail", e, { id: post.id, platform }); }
         }
         logInfo("rewrite.platform.ok", { id: post.id, platform, durationMs });
         if (onPlatform) { try { onPlatform({ platform, status: "ok", result: row }); } catch {} }
       } catch (e) {
-        const errMsg = String((e && e.message) || e);
+        const errMsg = String((e?.message) || e);
         out.errors[platform] = errMsg;
         logWarn("rewrite.platform.fail", e, { id: post.id, platform });
         if (onPlatform) { try { onPlatform({ platform, status: "fail", err: errMsg }); } catch {} }
@@ -6084,7 +6454,7 @@
     }
     const d = row.data || {};
     if (platform === "tiktok") {
-      const tags = (Array.isArray(d.hashtags) ? d.hashtags : []).map((t) => "#" + String(t).replace(/^#/, "")).join(" ");
+      const tags = (Array.isArray(d.hashtags) ? d.hashtags : []).map((t) => `#${String(t).replace(/^#/, "")}`).join(" ");
       return `<div class="fs-rw-block"><div class="fs-rw-label">Hook</div><div class="fs-rw-text">${escHTML(d.hook || "")}</div></div>
         <div class="fs-rw-block"><div class="fs-rw-label">Script</div><div class="fs-rw-text fs-rw-multi">${escHTML(d.script || "")}</div></div>
         <div class="fs-rw-block"><div class="fs-rw-label">CTA</div><div class="fs-rw-text">${escHTML(d.cta || "")}</div></div>
@@ -6101,14 +6471,14 @@
     }
     if (platform === "x") {
       const len = (s) => String(s || "").length;
-      const thread = (Array.isArray(d.thread) ? d.thread : []).map((t, i) =>
+      const thread = (Array.isArray(d.thread) ? d.thread : []).map((t, _i) =>
         `<li><span class="fs-rw-cnt">${len(t)}/280</span> ${escHTML(t)}</li>`
       ).join("");
       return `<div class="fs-rw-block"><div class="fs-rw-label">Single <span class="fs-rw-cnt">${len(d.single)}/280</span></div><div class="fs-rw-text fs-rw-multi">${escHTML(d.single || "")}</div></div>
         <div class="fs-rw-block"><div class="fs-rw-label">Thread</div><ol class="fs-rw-thread">${thread}</ol></div>`;
     }
     if (platform === "linkedin") {
-      const tags = (Array.isArray(d.hashtags) ? d.hashtags : []).map((t) => "#" + String(t).replace(/^#/, "")).join(" ");
+      const tags = (Array.isArray(d.hashtags) ? d.hashtags : []).map((t) => `#${String(t).replace(/^#/, "")}`).join(" ");
       const wc = String(d.post || "").trim().split(/\s+/).filter(Boolean).length;
       return `<div class="fs-rw-block"><div class="fs-rw-label">Post <span class="fs-rw-cnt">${wc} words</span></div><div class="fs-rw-text fs-rw-multi">${escHTML(d.post || "")}</div></div>
         <div class="fs-rw-block"><div class="fs-rw-label">Hashtags</div><div class="fs-rw-text">${escHTML(tags)}</div></div>`;
@@ -6120,7 +6490,7 @@
     if (!row || !row.data) return "";
     const d = row.data;
     if (platform === "tiktok") {
-      const tags = (Array.isArray(d.hashtags) ? d.hashtags : []).map((t) => "#" + String(t).replace(/^#/, "")).join(" ");
+      const tags = (Array.isArray(d.hashtags) ? d.hashtags : []).map((t) => `#${String(t).replace(/^#/, "")}`).join(" ");
       return `${d.hook || ""}\n\n${d.script || ""}\n\n${d.cta || ""}\n\n${tags}`.trim();
     }
     if (platform === "yt_shorts") {
@@ -6131,7 +6501,7 @@
       return `SINGLE:\n${d.single || ""}\n\nTHREAD:\n${(Array.isArray(d.thread) ? d.thread : []).map((t, i) => `${i + 1}. ${t}`).join("\n")}`.trim();
     }
     if (platform === "linkedin") {
-      const tags = (Array.isArray(d.hashtags) ? d.hashtags : []).map((t) => "#" + String(t).replace(/^#/, "")).join(" ");
+      const tags = (Array.isArray(d.hashtags) ? d.hashtags : []).map((t) => `#${String(t).replace(/^#/, "")}`).join(" ");
       return `${d.post || ""}\n\n${tags}`.trim();
     }
     return "";
@@ -6166,7 +6536,7 @@
       </div>
       <div class="fs-rw-content" data-rw-content>${_rwRenderResultHTML(active, activeRow)}</div>
       <div class="fs-rw-controls">
-        <button class="fs-icon-btn" data-act="rw-copy" data-platform="${active}" ${activeRow && activeRow.data ? "" : "disabled"}>Copy</button>
+        <button class="fs-icon-btn" data-act="rw-copy" data-platform="${active}" ${activeRow?.data ? "" : "disabled"}>Copy</button>
         <input class="fs-rw-nudge" data-rw-nudge type="text" placeholder="Regenerate nudge (e.g. &quot;more aggressive hook&quot;, &quot;shorter&quot;)" />
         <button class="fs-icon-btn" data-act="rw-regen" data-platform="${active}">Regenerate</button>
         <button class="fs-icon-btn" data-act="rw-regen-all">Regenerate ALL</button>
@@ -6183,7 +6553,7 @@
 
   const rewriteOneForUI = async (post) => {
     if (!post) return;
-    if (state.rewriteInflight.has(post.id)) { setStatus(`repurpose already running for this post`); return; }
+    if (state.rewriteInflight.has(post.id)) { setStatus("repurpose already running for this post"); return; }
     _rwModalState.postId = post.id;
     _rwModalState.bundle = { results: {}, errors: {}, usedVoice: false, voiceUsername: null, model: state.ai.model };
     _rwModalState.activeTab = "tiktok";
@@ -6215,7 +6585,7 @@
       setRewriteStatus(`done \u00b7 ${okCount} ok, ${failCount} failed`);
       logInfo("rewrite.bundle.ok", { id: post.id, ok: okCount, fail: failCount });
     } catch (e) {
-      setRewriteStatus(`error: ${String(e && e.message || e).slice(0, 120)}`);
+      setRewriteStatus(`error: ${String(e?.message || e).slice(0, 120)}`);
       logError("rewrite.bundle.fail", e, { id: post.id });
     } finally {
       state.rewriteInflight.delete(post.id);
@@ -6243,14 +6613,14 @@
       renderRewriteModalBody();
       setRewriteStatus(`${platform}: ${r.results[platform] ? "ok" : "failed"}`);
     } catch (e) {
-      setRewriteStatus(`regen failed: ${String(e && e.message || e).slice(0, 120)}`);
+      setRewriteStatus(`regen failed: ${String(e?.message || e).slice(0, 120)}`);
     }
   };
 
   // -------- Bulk repurpose (top N outliers → markdown export) --------
   const renderRewriteBatchMarkdown = (items, date) => {
     const fmtTags = (tags) => (Array.isArray(tags) ? tags : [])
-      .map((t) => "#" + String(t || "").replace(/^#/, "").trim())
+      .map((t) => `#${String(t || "").replace(/^#/, "").trim()}`)
       .filter((s) => s.length > 1).join(" ");
     const sections = items.map(({ post, bundle }) => {
       const lines = [];
@@ -6260,7 +6630,7 @@
       lines.push("");
       if (post.desc) {
         lines.push("**Original caption:**");
-        lines.push("> " + String(post.desc).replace(/\n/g, "\n> "));
+        lines.push(`> ${String(post.desc).replace(/\n/g, "\n> ")}`);
         lines.push("");
       }
       for (const platform of REWRITE_PLATFORMS) {
@@ -6276,7 +6646,7 @@
           for (const t of (Array.isArray(d.onScreenText) ? d.onScreenText : [])) lines.push(`- t=${t.tStart}s \u2014 ${t.text}`);
           lines.push("", `**CTA:** ${d.cta || ""}`);
         } else if (platform === "x") {
-          lines.push("**Single:**", "> " + String(d.single || "").replace(/\n/g, "\n> "), "", "**Thread:**");
+          lines.push("**Single:**", `> ${String(d.single || "").replace(/\n/g, "\n> ")}`, "", "**Thread:**");
           (Array.isArray(d.thread) ? d.thread : []).forEach((t, i) => lines.push(`${i + 1}. ${t}`));
         } else if (platform === "linkedin") {
           lines.push(d.post || "");
@@ -6306,7 +6676,7 @@
         items.push({ post, bundle });
       } catch (e) {
         state.rewriteBatch.fail++;
-        items.push({ post, bundle: { results: {}, errors: { _batch: String(e && e.message || e) } } });
+        items.push({ post, bundle: { results: {}, errors: { _batch: String(e?.message || e) } } });
       }
       state.rewriteBatch.done++;
       setStatus(`repurposing ${state.rewriteBatch.done}/${state.rewriteBatch.total}\u2026`);
@@ -6344,7 +6714,7 @@
   const loadPipelineAvg = async () => {
     try {
       const r = await chrome.storage.local.get([PIPELINE_AVG_KEY]);
-      const v = r && r[PIPELINE_AVG_KEY];
+      const v = r?.[PIPELINE_AVG_KEY];
       if (v && typeof v.ms === "number") {
         state.pipeline.avgPerPostMs = v.ms;
         state.pipeline.samples = Number(v.n) || 0;
@@ -6386,8 +6756,7 @@
   // Adapter: write a text artifact (transcript, diagnosis, rewrites, README)
   // by data-URL piped through chrome.downloads. Same folder root as the video.
   const pipelineWriteFile = async ({ path, content }) => {
-    const dataUrl = "data:text/markdown;charset=utf-8;base64," +
-      btoa(unescape(encodeURIComponent(String(content || ""))));
+    const dataUrl = `data:text/markdown;charset=utf-8;base64,${btoa(unescape(encodeURIComponent(String(content || ""))))}`;
     const r = await bgDownload(dataUrl, path);
     if (!r.ok) throw new Error(`writeFile failed: ${r.err || "unknown"}`);
     return { path, downloadId: r.id };
@@ -6405,13 +6774,13 @@
       };
     }
     const r = await transcribeOne(post, { quiet: true });
-    if (!r || !r.ok) throw new Error(`transcribe failed: ${(r && r.err) || "unknown"}`);
+    if (!r || !r.ok) throw new Error(`transcribe failed: ${(r?.err) || "unknown"}`);
     const merged = posts.get(post.id) || post;
     return {
-      text: merged.transcript || (r.body && r.body.text) || "",
-      segments: merged.transcriptSegments || (r.body && r.body.segments) || [],
-      language: merged.transcriptLang || (r.body && r.body.language) || "",
-      model: merged.transcriptModel || (r.body && r.body.model) || "",
+      text: merged.transcript || (r.body?.text) || "",
+      segments: merged.transcriptSegments || (r.body?.segments) || [],
+      language: merged.transcriptLang || (r.body?.language) || "",
+      model: merged.transcriptModel || (r.body?.model) || "",
     };
   };
 
@@ -6433,30 +6802,30 @@
       const h = window.__fsLlm
         ? await window.__fsLlm.healthCheck(state.ai.endpoint)
         : null;
-      if (h && h.ok) {
+      if (h?.ok) {
         out.ollama = { ok: true, models: h.models || [], model: state.ai.model };
       } else {
-        out.ollama = { ok: false, err: (h && h.err) || "bridge unavailable" };
+        out.ollama = { ok: false, err: (h?.err) || "bridge unavailable" };
       }
-    } catch (e) { out.ollama = { ok: false, err: String(e && e.message || e) }; }
+    } catch (e) { out.ollama = { ok: false, err: String(e?.message || e) }; }
     try {
       const base = sidecarBase();
       const r = await sendBg("transcribe-health", { sidecarUrl: base });
-      if (r && r.ok && r.body && r.body.ok) {
+      if (r?.ok && r.body && r.body.ok) {
         out.whisper = { ok: true, model: r.body.model || "" };
       } else {
-        out.whisper = { ok: false, err: (r && r.err) || "unreachable" };
+        out.whisper = { ok: false, err: (r?.err) || "unreachable" };
       }
-    } catch (e) { out.whisper = { ok: false, err: String(e && e.message || e) }; }
+    } catch (e) { out.whisper = { ok: false, err: String(e?.message || e) }; }
     state.pipeline.health = { ...out, checkedAt: Date.now() };
     return out;
   };
 
   // Adapter: IDB sentinel store for resume. Wraps the new pipeline_steps store.
   const pipelineStoreAdapter = {
-    getStep: (id, step) => (window.__fsStore && window.__fsStore.getPipelineStep)
+    getStep: (id, step) => (window.__fsStore?.getPipelineStep)
       ? window.__fsStore.getPipelineStep(id, step) : null,
-    putStep: (id, step, payload) => (window.__fsStore && window.__fsStore.putPipelineStep)
+    putStep: (id, step, payload) => (window.__fsStore?.putPipelineStep)
       ? window.__fsStore.putPipelineStep(id, step, payload) : null,
   };
 
@@ -6471,16 +6840,16 @@
 
   const renderPipelineStatusPanel = () => {
     const h = state.pipeline.health;
-    const ok = (k) => h[k] && h[k].ok ? "✓" : (h[k] === null ? "…" : "✗");
-    const ollama = h.ollama && h.ollama.ok
+    const _ok = (k) => h[k]?.ok ? "✓" : (h[k] === null ? "…" : "✗");
+    const ollama = h.ollama?.ok
       ? `✓ Ollama (${escHTML(h.ollama.model || "?")})`
-      : `✗ Ollama${h.ollama ? " — " + escHTML(h.ollama.err || "down") : ""}`;
-    const whisper = h.whisper && h.whisper.ok
+      : `✗ Ollama${h.ollama ? ` — ${escHTML(h.ollama.err || "down")}` : ""}`;
+    const whisper = h.whisper?.ok
       ? `✓ Whisper (${escHTML(h.whisper.model || "?")})`
-      : `✗ Whisper${h.whisper ? " — " + escHTML(h.whisper.err || "down") : ""}`;
+      : `✗ Whisper${h.whisper ? ` — ${escHTML(h.whisper.err || "down")}` : ""}`;
     return `<div class="fs-pl-sys">
-      <span class="fs-pl-sys-row" data-ok="${h.ollama && h.ollama.ok ? "1" : "0"}">${ollama}</span>
-      <span class="fs-pl-sys-row" data-ok="${h.whisper && h.whisper.ok ? "1" : "0"}">${whisper}</span>
+      <span class="fs-pl-sys-row" data-ok="${h.ollama?.ok ? "1" : "0"}">${ollama}</span>
+      <span class="fs-pl-sys-row" data-ok="${h.whisper?.ok ? "1" : "0"}">${whisper}</span>
     </div>`;
   };
 
@@ -6672,11 +7041,11 @@
       const tag = result.aborted ? "cancelled" : (result.failed ? "done with failures" : "done");
       setStatus(`pipeline ${tag}: ${result.completed} ok, ${result.failed} failed${result.skipped ? `, ${result.skipped} resumed steps` : ""}`);
     } catch (e) {
-      const msg = String(e && e.message || e);
+      const msg = String(e?.message || e);
       setStatus(`pipeline error: ${msg.slice(0, 160)}`);
       logError("pipeline.fail", e);
       // Surface health errors prominently in the modal.
-      const body = els.modal && els.modal.querySelector(".fs-modal-body");
+      const body = els.modal?.querySelector(".fs-modal-body");
       if (body) body.insertAdjacentHTML("afterbegin", `<div class="fs-pl-fatal">⚠ ${escHTML(msg)}</div>`);
     } finally {
       state.pipeline.running = false;
@@ -6696,14 +7065,14 @@
 
   // Footer ETA tag — reflects current top-N input × moving-avg per-post ms.
   const renderPipelineEta = () => {
-    const eta = els.root && els.root.querySelector("[data-pl-eta]");
+    const eta = els.root?.querySelector("[data-pl-eta]");
     if (!eta) return;
     const inp = els.root.querySelector('[data-ctl="pipelineTopN"]');
-    const n = Math.max(1, Math.min(50, Number(inp && inp.value) || 10));
+    const n = Math.max(1, Math.min(50, Number(inp?.value) || 10));
     const avg = state.pipeline.avgPerPostMs;
     if (state.pipeline.running) {
       const remaining = Math.max(0, state.pipeline.progress.total - state.pipeline.progress.idx);
-      eta.textContent = avg && remaining ? `running · ETA ${fmtEta(remaining * avg)}` : `running…`;
+      eta.textContent = avg && remaining ? `running · ETA ${fmtEta(remaining * avg)}` : "running…";
       eta.hidden = false;
     } else if (avg) {
       eta.textContent = `ETA ${fmtEta(n * avg)}`;
@@ -6756,7 +7125,7 @@
         { role: "system", content: VOICE_SYSTEM },
         { role: "user", content: userContent },
       ];
-      const model = String(state.ai && state.ai.model || "gemma4");
+      const model = String(state.ai?.model || "gemma4");
       logInfo("voice.regen.start", { username: u, sourcePosts: candidates.length, model });
       setStatus(`voice: profiling @${u} from ${candidates.length} posts…`);
       const r = await window.__fsLlm.chat({
@@ -6784,7 +7153,7 @@
       return row;
     } catch (e) {
       logWarn("voice.regen.fail", e, { username: u });
-      setStatus(`voice regen failed: ${String(e && e.message || e).slice(0, 80)}`);
+      setStatus(`voice regen failed: ${String(e?.message || e).slice(0, 80)}`);
       return null;
     } finally {
       voiceInflight.delete(u);
@@ -6812,12 +7181,12 @@
       kind: "voice-preview",
       options: { temperature: 0.7 },
     });
-    return String((r && r.text) || "").trim();
+    return String((r?.text) || "").trim();
   };
 
   const openVoicePreview = async (voice, example) => {
     const u = voice.username;
-    const dl = (label, items) => `<div class="fs-voice-meta-row"><b>${label}:</b> ${items && items.length ? items.map((s) => `<code>${escHTML(s)}</code>`).join(" \u00b7 ") : "<span style='color:#a8a9b3'>(none)</span>"}</div>`;
+    const dl = (label, items) => `<div class="fs-voice-meta-row"><b>${label}:</b> ${items?.length ? items.map((s) => `<code>${escHTML(s)}</code>`).join(" \u00b7 ") : "<span style='color:#a8a9b3'>(none)</span>"}</div>`;
     const summaryHTML = `
       <div class="fs-voice-summary">
         <div class="fs-voice-meta-row"><b>Tone:</b> ${escHTML(voice.tone || "—")} · <b>Avg sentence:</b> ~${voice.avgSentenceLen} words · <b>Emoji rate:</b> ${voice.emojiRate}/100w</div>
@@ -6830,7 +7199,7 @@
     const exampleHTML = `
       <div class="fs-voice-original">
         <div class="fs-voice-col-head">Original caption</div>
-        <div class="fs-voice-orig-body">${escHTML(example && example.desc || "(no caption)")}</div>
+        <div class="fs-voice-orig-body">${escHTML(example?.desc || "(no caption)")}</div>
       </div>`;
     const sideBySideHTML = `
       <div class="fs-voice-side">
@@ -6845,19 +7214,19 @@
       </div>`;
     openModal(`Voice fingerprint — @${escHTML(u)}`, summaryHTML + exampleHTML + sideBySideHTML);
     if (!window.__fsLlm) return;
-    const model = String(state.ai && state.ai.model || "gemma4");
-    const targetWith = els.modal && els.modal.querySelector("[data-voice-with]");
-    const targetWithout = els.modal && els.modal.querySelector("[data-voice-without]");
+    const model = String(state.ai?.model || "gemma4");
+    const targetWith = els.modal?.querySelector("[data-voice-with]");
+    const targetWithout = els.modal?.querySelector("[data-voice-without]");
     const fingerprintSystem = buildVoiceSystemPrompt(voice);
     const settle = (el, p) => p.then(
       (txt) => { if (el) el.textContent = txt || "(empty response)"; },
-      (err) => { if (el) el.textContent = `failed: ${String(err && err.message || err).slice(0, 120)}`; },
+      (err) => { if (el) el.textContent = `failed: ${String(err?.message || err).slice(0, 120)}`; },
     );
     await Promise.all([
       settle(targetWithout, oneRewrite(REWRITE_NEUTRAL_SYSTEM, example, model)),
       settle(targetWith, oneRewrite(fingerprintSystem, example, model)),
     ]);
-    logInfo("voice.preview.rendered", { username: u, postId: example && example.id });
+    logInfo("voice.preview.rendered", { username: u, postId: example?.id });
   };
 
   const downloadVideo = async (p) => {
@@ -6879,7 +7248,7 @@
     } catch (e) {
       // Pass the Error through so logWarn lifts its stack into the entry.
       logWarn("download.fail", e, { id: p.id, url: p.videoUrl, fallback: "newtab" });
-      setStatus(`download blocked by CDN — opened in new tab`);
+      setStatus("download blocked by CDN — opened in new tab");
       window.open(p.videoUrl, "_blank", "noopener");
     }
   };
@@ -6889,9 +7258,9 @@
   // licensed IG music returns no progressive_download_url for legal
   // reasons — the row button is disabled in that case.
   const downloadAudio = async (p) => {
-    const url = p && p.audio && p.audio.downloadUrl;
+    const url = p?.audio?.downloadUrl;
     if (!url) {
-      logWarn("download.audio.skip", { id: p && p.id, reason: "no-audio-url" });
+      logWarn("download.audio.skip", { id: p?.id, reason: "no-audio-url" });
       return;
     }
     const ext = /\.mp3(\?|$)/i.test(url) ? "mp3" : (/\.m4a(\?|$)/i.test(url) ? "m4a" : "mp4");
@@ -6909,7 +7278,7 @@
       logInfo("download.audio.ok", { id: p.id, bytes: blob.size });
     } catch (e) {
       logWarn("download.audio.fail", e, { id: p.id, url, fallback: "newtab" });
-      setStatus(`audio download blocked by CDN — opened in new tab`);
+      setStatus("audio download blocked by CDN — opened in new tab");
       window.open(url, "_blank", "noopener");
     }
   };
@@ -6979,8 +7348,8 @@
       <span class="fs-dx-bar-val">${v}/10</span>
     </div>`;
   };
-  const renderDiagnosisBlock = (p, busy) => {
-    const d = p && p.diagnosis;
+  const _renderDiagnosisBlock = (p, busy) => {
+    const d = p?.diagnosis;
     const canDiagnose = !!p.cover;
     const btnLabel = busy
       ? "Diagnosing…"
@@ -7020,7 +7389,7 @@
     const velocityLabel = velocityReady ? `${fmt(Math.round(velocity))}/hr` : "—";
     const vph = p.vph || 0;
     const cpr = p.cpr || 0;
-    const primary =
+    const _primary =
       state.sort === "relevance"
         ? `<span class="fs-score ${p.__fsRelevance >= 0.6 ? "fs-warm" : ""}" title="${escHTML(p.__fsRelevanceReason || "baseline")}">${p.__fsRelevance != null ? p.__fsRelevance.toFixed(2) : "—"}</span>`
         : state.sort === "outlier"
@@ -7030,12 +7399,12 @@
           : state.sort === "velocity"
             ? `<span class="fs-score ${velocity > 0 ? "fs-warm" : ""}" title="Observed views/hour between your first and latest collection snapshots">${velocityLabel}</span>`
             : state.sort === "vph"
-              ? `<span class="fs-score ${vph > 0 ? "fs-warm" : ""}" title="Total views ÷ hours since the post was published">${vph > 0 ? fmt(Math.round(vph)) + "/hr" : "—"}</span>`
+              ? `<span class="fs-score ${vph > 0 ? "fs-warm" : ""}" title="Total views ÷ hours since the post was published">${vph > 0 ? `${fmt(Math.round(vph))}/hr` : "—"}</span>`
               : state.sort === "cpr"
                 ? `<span class="fs-score ${cpr >= 20 ? "fs-warm" : ""}">${cpr ? cpr.toFixed(1) : "—"}</span>`
                 : `<span class="fs-score">${fmt(p[state.sort] || 0)}</span>`;
     const cprBadge = cpr > 0 ? `<span class="fs-cpr-badge" title="Comments per 1k likes">${cpr.toFixed(1)} CPR</span>` : "";
-    const desc = escHTML(p.desc || "(no caption)").slice(0, 140);
+    const _desc = escHTML(p.desc || "(no caption)").slice(0, 140);
     // On a profile page, posts the user originally collected from Explore
     // would otherwise render as "· explore" — misleading when we're scoped
     // to one creator. Fall through to the format tag (reel / post) instead.
@@ -7047,13 +7416,13 @@
     const who = p.author ? `@${escHTML(p.author)}` : "(unknown)";
     const dlDisabled = p.videoUrl ? "" : "fs-dl-disabled";
     const dlTitle = p.videoUrl ? "Download video" : "No video URL (image post)";
-    const audioUrl = p.audio && p.audio.downloadUrl;
+    const audioUrl = p.audio?.downloadUrl;
     const audioDisabled = audioUrl ? "" : "fs-dl-disabled";
     const audioTitle = audioUrl
       ? "Download audio"
       : "Audio not downloadable (licensed music)";
     const txInflight = state.transcribeInflight.has(p.id);
-    const txDone = !!(p.transcript && p.transcript.trim());
+    const txDone = !!(p.transcript?.trim());
     const txIsAlt = txDone && p.transcriptSource === "ig-alt";
     const txIcon = txInflight ? "⏳" : (txDone ? (txIsAlt ? "📝 alt" : "📝") : "✎");
     const txSrcBadge = (txDone && p.transcriptSource && !txInflight)
@@ -7084,9 +7453,9 @@
     const pinCls = meta.pinned ? " fs-pinned" : "";
     const expandedCls = state.expandedId === p.id ? " fs-expanded" : "";
     const checked = state.selected.has(p.id) ? "checked" : "";
-    const pinTitle = meta.pinned ? "Unpin" : "Pin";
-    const pinIcon = meta.pinned ? "📌" : "📍";
-    const statusOptions = [
+    const _pinTitle = meta.pinned ? "Unpin" : "Pin";
+    const _pinIcon = meta.pinned ? "📌" : "📍";
+    const _statusOptions = [
       `<option value="" ${!meta.status ? "selected" : ""}>— status</option>`,
       ...STATUSES.map((s) => `<option value="${s}" ${meta.status === s ? "selected" : ""}>${s}</option>`),
     ].join("");
@@ -7116,17 +7485,17 @@
     return `<div class="fs-row fs-tier-${tier}${statusCls}${pinCls}${focusCls}${selCls}${expandedCls}" data-row-id="${escHTML(p.id)}">
       <input type="checkbox" class="fs-check" data-id="${escHTML(p.id)}" ${checked} aria-label="Select row" />
       <span class="fs-rank">${rank}</span>
-      <a class="fs-thumb-link" href="${escHTML(p.url)}" target="_blank" rel="noopener" data-cover="${escHTML(p.cover)}" data-video="${escHTML(p.videoUrl || "")}">
-        <img class="fs-thumb" src="${escHTML(p.cover)}" referrerpolicy="no-referrer" loading="lazy" />
+      <a class="fs-thumb-link" href="${escHTML(p.url)}" target="_blank" rel="noopener" data-cover="${escHTML(displayCoverForPost(p))}" data-fallback-cover="${escHTML(fallbackYouTubeThumbUrl(p, "mqdefault"))}" data-video="${escHTML(p.videoUrl || "")}">
+        <img class="fs-thumb" src="${escHTML(displayCoverForPost(p))}" referrerpolicy="no-referrer" loading="lazy" />
       </a>
       <div class="fs-meta">
         <button class="fs-meta-caption" data-act="expand" data-id="${escHTML(p.id)}" title="Click to add notes / tags">
-          <span class="fs-meta-line1">${who}${tag}${noteIcon}${rising ? " " + rising : ""}</span>
+          <span class="fs-meta-line1">${who}${tag}${noteIcon}${rising ? ` ${rising}` : ""}</span>
           <span class="fs-meta-stats">
             <span class="fs-meta-stat">${fmt(p.likes)} ♥</span>
-            <span class="fs-meta-stat">${state.sort === "velocity" ? velocityLabel : state.sort === "vph" ? (vph > 0 ? fmt(Math.round(vph)) + "/hr" : "0/hr") : fmt(p.views)} ▶</span>
+            <span class="fs-meta-stat">${state.sort === "velocity" ? velocityLabel : state.sort === "vph" ? (vph > 0 ? `${fmt(Math.round(vph))}/hr` : "0/hr") : fmt(p.views)} ▶</span>
             <span class="fs-meta-stat">${fmt(p.comments)} 💬</span>
-            <span class="fs-meta-stat">${fmtDate(p.createTime)}${cprBadge ? " " + cprBadge : ""}</span>
+            <span class="fs-meta-stat">${fmtDate(p.createTime)}${cprBadge ? ` ${cprBadge}` : ""}</span>
           </span>
         </button>
       </div>
@@ -7177,7 +7546,7 @@
       if (state.hashtagFilter) {
         els.hashtagChip.hidden = false;
         els.hashtagChip.textContent = `#${state.hashtagFilter} ✕`;
-        els.hashtagChip.title = `Clear hashtag filter`;
+        els.hashtagChip.title = "Clear hashtag filter";
       } else {
         els.hashtagChip.hidden = true;
       }
@@ -7186,7 +7555,7 @@
       if (state.keywordFilter) {
         els.keywordChip.hidden = false;
         els.keywordChip.textContent = `“${state.keywordFilter}” ✕`;
-        els.keywordChip.title = `Clear keyword filter`;
+        els.keywordChip.title = "Clear keyword filter";
       } else {
         els.keywordChip.hidden = true;
       }
@@ -7195,7 +7564,7 @@
       if (state.nicheFilter) {
         els.nicheChip.hidden = false;
         els.nicheChip.textContent = `niche: ${state.nicheFilter} ✕`;
-        els.nicheChip.title = `Clear niche filter`;
+        els.nicheChip.title = "Clear niche filter";
       } else {
         els.nicheChip.hidden = true;
       }
@@ -7204,7 +7573,7 @@
       if (state.formatFilter) {
         els.formatChip.hidden = false;
         els.formatChip.textContent = `format: ${state.formatFilter} ✕`;
-        els.formatChip.title = `Clear format filter`;
+        els.formatChip.title = "Clear format filter";
       } else {
         els.formatChip.hidden = true;
       }
@@ -7223,9 +7592,9 @@
   const makeScoreOf = (list) => {
     const vphMed = median((list || []).map((p) => p.vph || 0).filter((x) => x > 0));
     return (p) => {
-      const s = Number(p && p._score) || 0;
+      const s = Number(p?._score) || 0;
       if (s > 0) return s;
-      const v = Number(p && p.vph) || 0;
+      const v = Number(p?.vph) || 0;
       if (vphMed > 0 && v > 0) return v / vphMed;
       return 0;
     };
@@ -7280,7 +7649,8 @@
   const computeKeywords = (list, scoreOf) => {
     const counts = new Map();
     const sums = new Map();
-    let allSum = 0, allN = 0;
+    let allSum = 0;
+    let allN = 0;
     for (const p of list) {
       const s = scoreOf(p);
       allSum += s; allN++;
@@ -7298,7 +7668,7 @@
       const meanWith = sums.get(w) / n;
       const remN = allN - n;
       const meanWithout = remN > 0 ? (allSum - sums.get(w)) / remN : 0;
-      const lift = meanWithout > 0 ? meanWith / meanWithout : (meanWith > 0 ? Infinity : 0);
+      const lift = meanWithout > 0 ? meanWith / meanWithout : (meanWith > 0 ? Number.POSITIVE_INFINITY : 0);
       rows.push({ word: w, n, lift, meanWith });
     }
     // Frequency-first for keywords ("commonly used words" — user's literal
@@ -7356,7 +7726,8 @@
     // Hashtag lift
     const tagCounts = new Map();
     const tagScoreSum = new Map();
-    let allScoreSum = 0, allN = 0;
+    let allScoreSum = 0;
+    let allN = 0;
     for (const p of list) {
       const s = scoreOf(p);
       allScoreSum += s; allN++;
@@ -7379,7 +7750,7 @@
       const meanWith = tagScoreSum.get(t) / n;
       const remN = allN - n;
       const meanWithout = remN > 0 ? (allScoreSum - tagScoreSum.get(t)) / remN : 0;
-      const lift = meanWithout > 0 ? meanWith / meanWithout : (meanWith > 0 ? Infinity : 0);
+      const lift = meanWithout > 0 ? meanWith / meanWithout : (meanWith > 0 ? Number.POSITIVE_INFINITY : 0);
       tagRows.push({ tag: t, n, lift, meanWith });
     }
     tagRows.sort((a, b) => b.lift - a.lift);
@@ -7436,7 +7807,9 @@
   };
 
   const statsHistSVG = (h) => {
-    const W = 280, H = 60, B = h.nb;
+    const W = 280;
+    const H = 60;
+    const B = h.nb;
     const bw = W / B;
     const max = Math.max(1, ...h.out, ...h.non);
     let bars = "";
@@ -7451,8 +7824,12 @@
   };
 
   const statsHeatmapSVG = (cell) => {
-    const cw = 11, ch = 13, padX = 22, padY = 12;
-    const W = padX + 24 * cw, H = padY + 7 * ch;
+    const cw = 11;
+    const ch = 13;
+    const padX = 22;
+    const padY = 12;
+    const W = padX + 24 * cw;
+    const H = padY + 7 * ch;
     let max = 0;
     for (let d = 0; d < 7; d++) for (let h = 0; h < 24; h++) {
       const c = cell[d][h];
@@ -7472,7 +7849,8 @@
           const w = (c.sum / c.n) * Math.log2(c.n + 1);
           alpha = Math.min(1, w / max);
         }
-        const x = padX + h * cw, y = padY + d * ch;
+        const x = padX + h * cw;
+        const y = padY + d * ch;
         const fill = c.n ? `rgba(110,142,255,${(0.15 + 0.85 * alpha).toFixed(2)})` : "#1a1b27";
         const tip = c.n ? `${c.n} posts · mean ${(c.sum / c.n).toFixed(2)}x · ${dows[d]} ${h}h` : "";
         svg += `<rect x="${x}" y="${y}" width="${cw - 1}" height="${ch - 1}" fill="${fill}" rx="1.5"><title>${tip}</title></rect>`;
@@ -7487,12 +7865,12 @@
   // Renders the Hook × Topic cluster table inline inside the Stats panel.
   // Reuses computePatterns() (defined later) so the block stays in sync
   // with the dropped Patterns tab.
-  const patternsBlockHTML = (list) => {
+  const _patternsBlockHTML = (list) => {
     const rows = computePatterns(list);
     if (!rows.length) {
       return `<div class="fs-stats-empty">No analyzed posts in this scope yet — use 🧠 on rows or “Analyze top N” below.</div>`;
     }
-    const total = list.filter((p) => p.ai && p.ai.hook).length;
+    const total = list.filter((p) => p.ai?.hook).length;
     const head = `<div class="fs-patterns-head">${total} analyzed post${total === 1 ? "" : "s"} · ${rows.length} cluster${rows.length === 1 ? "" : "s"}</div>`;
     const body = rows.map((r) => `
       <button class="fs-pattern-row" data-act="pattern-pick" data-hooktype="${escHTML(r.hookType)}" data-topic="${escHTML(r.topic)}" title="Filter list to this cluster">
@@ -7502,7 +7880,7 @@
         <span class="fs-pattern-cell fs-pattern-score">${r.medianOutlier.toFixed(2)}× med</span>
         <span class="fs-pattern-cell fs-pattern-angle">${r.topAngle ? escHTML(r.topAngle) : ""}</span>
       </button>`).join("");
-    return head + `<div class="fs-patterns-rows">${body}</div>`;
+    return `${head}<div class="fs-patterns-rows">${body}</div>`;
   };
 
   const renderStats = () => {
@@ -7518,15 +7896,15 @@
     }
     if (!list.length) {
       els.statsBody.innerHTML = `<div class="fs-stats-empty">No posts in scope yet — collect to populate.</div>`;
-      if (els.statsSub) els.statsSub.textContent = `0 posts`;
+      if (els.statsSub) els.statsSub.textContent = "0 posts";
       return;
     }
     const s = computeStats(list);
     if (els.statsSub) {
       els.statsSub.textContent = `${s.total} posts · ${s.authors} author${s.authors === 1 ? "" : "s"} · CPR med ${s.cpr.median.toFixed(1)}`;
     }
-    const fmtPct = (x) => x.toFixed(0) + "%";
-    const fmtLift = (x) => isFinite(x) ? x.toFixed(2) + "×" : "∞";
+    const fmtPct = (x) => `${x.toFixed(0)}%`;
+    const fmtLift = (x) => Number.isFinite(x) ? `${x.toFixed(2)}×` : "∞";
     const formatTable = `
       <table class="fs-stats-table">
         <thead><tr><th>Format</th><th>n</th><th>Median views</th><th>≥ 2× outlier</th></tr></thead>
@@ -7543,7 +7921,7 @@
       <div class="fs-stats-tags">
         ${s.hashtags.map((t) => `<button class="fs-stats-tag${state.hashtagFilter === t.tag ? " fs-stats-tag-active" : ""}" data-act="stats-tag" data-tag="${escHTML(t.tag)}" title="${t.n} posts · mean score ${t.meanWith.toFixed(2)}x">#${escHTML(t.tag)} <span class="fs-stats-tag-lift">${fmtLift(t.lift)}</span></button>`).join("")}
       </div>` : `<div class="fs-stats-empty">No hashtags reach the n≥3 threshold.</div>`;
-    const kwList = (s.keywords && s.keywords.length) ? `
+    const kwList = (s.keywords?.length) ? `
       <div class="fs-stats-tags">
         ${s.keywords.map((k) => `<button class="fs-stats-tag${state.keywordFilter === k.word ? " fs-stats-tag-active" : ""}" data-act="stats-keyword" data-keyword="${escHTML(k.word)}" title="${k.n} posts mention this word · mean score ${k.meanWith.toFixed(2)}x">${escHTML(k.word)} <span class="fs-stats-tag-lift">${k.n}</span></button>`).join("")}
       </div>` : `<div class="fs-stats-empty">No caption keywords reach the n≥3 threshold.</div>`;
@@ -7573,21 +7951,18 @@
         <span class="fs-stats-hint" data-niche-cluster-label-status>${escHTML(nicheClusterStatus)}</span>
       </div>`;
 
-    // ---- Formats: prefer visualFormat (cover-AI rollup: talking-head /
-    // info-card / split-screen / product / b-roll) over the legacy
-    // caption-rule `format` (list/story/tutorial/hottake/...) which collapses
-    // talking-head reels to "other" because no caption rule matches them.
-    // Falls back to caption format when cover-AI hasn't run yet.
+    // ---- Formats: `format` is the primary CSV filter label. It prefers a
+    // strong visualFormat when present, otherwise falls back to contentFormat.
     const fmtAgg = new Map();
     let fmtTotal = 0;
     let fmtVisualCount = 0;
     let fmtCaptionOnlyCount = 0;
     for (const p of list) {
-      const vf = (typeof p.visualFormat === "string" && p.visualFormat) ? p.visualFormat : null;
-      const cf = (typeof p.format === "string" && p.format) ? p.format : null;
-      const f = vf || cf;
+      const vf = (typeof p.visualFormat === "string" && p.visualFormat && p.visualFormat !== "other") ? p.visualFormat : null;
+      const cf = (typeof p.contentFormat === "string" && p.contentFormat) ? p.contentFormat : null;
+      const f = (typeof p.format === "string" && p.format) ? p.format : (vf || cf);
       if (!f) continue;
-      if (vf) fmtVisualCount++; else fmtCaptionOnlyCount++;
+      if (vf && f === vf) fmtVisualCount++; else fmtCaptionOnlyCount++;
       fmtAgg.set(f, (fmtAgg.get(f) || 0) + 1);
       fmtTotal += 1;
     }
@@ -7598,14 +7973,14 @@
       <div class="fs-stats-tags">
         ${formatRows2.map((r) => `<button class="fs-stats-format-chip${state.formatFilter === r.format ? " fs-stats-tag-active" : ""}" data-act="stats-format" data-format="${escHTML(r.format)}" title="${r.n} posts classified as ${r.format}">${escHTML(r.format)} <span class="fs-stats-tag-lift">${r.n}</span></button>`).join("")}
       </div>` : `<div class="fs-stats-empty">No format labels yet — click “Detect visual format” below.</div>`;
-    const cvBusy = !!(state.cvBatch && state.cvBatch.running);
+    const cvBusy = !!(state.cvBatch?.running);
     const cvProgress = cvBusy && state.cvBatch.total
       ? ` (${state.cvBatch.done}/${state.cvBatch.total})`
       : "";
     const formatActions = `
       <div class="fs-stats-actions">
         <button class="fs-icon-btn" data-act="stats-detect-visual-format" title="Run cover-AI on the top ${Math.min(list.length, 20)} posts — produces talking-head/info-card/split-screen/product/b-roll/other labels" ${cvBusy ? "disabled" : ""}>${cvBusy ? `⏳ Analyzing…${cvProgress}` : "👁️ Detect visual format"}</button>
-        <button class="fs-icon-btn" data-act="stats-detect-formats" title="Rule-based caption format detection (list / story / tutorial / before-after / …). Fast, no LLM. Talking-head reels usually fall to 'other' — use Detect visual format above for those.">⚡ Caption fallback</button>
+        <button class="fs-icon-btn" data-act="stats-detect-formats" title="Rule-based CSV classification from caption + transcript. Writes Category, Niche, Format, Content format, confidence, and source fields. Fast, no LLM.">⚡ Classify CSV fields</button>
         <span class="fs-stats-hint">${fmtTotal} of ${list.length} classified${fmtVisualCount ? ` • ${fmtVisualCount} visual` : ""}${fmtCaptionOnlyCount ? ` • ${fmtCaptionOnlyCount} caption-only` : ""}</span>
       </div>`;
     const histLegend = `
@@ -7716,7 +8091,7 @@
         if (!gKey) return "";
         if (gKey === "status") return statusOf(p.id) || "(no status)";
         if (gKey === "hookType" || gKey === "topic" || gKey === "angle") {
-          return (p.ai && p.ai[gKey]) || "(unanalyzed)";
+          return (p.ai?.[gKey]) || "(unanalyzed)";
         }
         if (gKey === "coverWinRate") {
           // Bucketize by score band so groups stay sane.
@@ -7756,16 +8131,176 @@
     });
   };
 
-  const exportCSV = (opts = {}) => {
-    const selectedOnly = !!opts.selectedOnly;
+  const csvTranscriptText = (p) => {
+    if (p && typeof p.transcript === "string" && p.transcript.trim()) return p.transcript;
+    if (Array.isArray(p?.transcriptSegments) && p.transcriptSegments.length) {
+      return p.transcriptSegments.map((s) => String((s?.text) || "").trim()).filter(Boolean).join(" ");
+    }
+    if (p && typeof p.captions === "string" && p.captions.trim()) return p.captions;
+    if (p?.audio && typeof p.audio.transcript === "string") return p.audio.transcript;
+    return "";
+  };
+  const csvTranscriptSegments = (p) => {
+    const segs = Array.isArray(p?.transcriptSegments) ? p.transcriptSegments : [];
+    return segs.map((s) => {
+      const start = Number.isFinite(Number(s?.start)) ? Number(s.start).toFixed(2) : "";
+      const end = Number.isFinite(Number(s?.end)) ? Number(s.end).toFixed(2) : "";
+      const text = String((s?.text) || "").trim();
+      return start || end ? `[${start}-${end}] ${text}` : text;
+    }).filter(Boolean).join(" | ");
+  };
+  const csvAi = (p) => (p?.ai && typeof p.ai === "object") ? p.ai : {};
+
+  const CSV_SORT_OPTIONS = [
+    { key: "current", label: "Current visible order" },
+    { key: "relevance", label: "Relevance (smart)" },
+    { key: "vph", label: "Views/hour since published" },
+    { key: "velocity", label: "Observed growth since collected" },
+    { key: "likes", label: "Likes" },
+    { key: "views", label: "Views" },
+    { key: "comments", label: "Comments" },
+    { key: "cpr", label: "CPR (comments/1k likes)" },
+    { key: "recent", label: "Most recent" },
+    { key: "outlier", label: "Outlier score" },
+    { key: "niche", label: "Niche" },
+    { key: "format", label: "Format" },
+    { key: "creator", label: "Creator name" },
+    { key: "transcript", label: "Transcript available" },
+  ];
+  const CSV_FIELD_GROUPS = [
+    {
+      title: "Core",
+      fields: [
+        { key: "rank", label: "Rank", value: (_p, ctx) => ctx.rank },
+        { key: "creator", label: "Creator name", value: (p) => p.author || "" },
+        { key: "displayName", label: "Creator display name", value: (p) => p.authorFullName || p.fullName || "" },
+        { key: "category", label: "Category", value: (p) => p.category || "" },
+        { key: "niche", label: "Niche", value: (p) => p.niche || p.category || (p.ai && (p.ai.niche || p.ai.nicheLabel)) || "" },
+        { key: "nicheBasis", label: "Niche basis", value: (p) => p.nicheBasis || "" },
+        { key: "format", label: "Format", value: (p) => p.format || p.visualFormat || p.contentFormat || "" },
+        { key: "contentFormat", label: "Content format", value: (p) => p.contentFormat || "" },
+        { key: "captionFormat", label: "Caption format", value: (p) => p.contentFormat || p.format || "" },
+        { key: "visualFormat", label: "Visual format", value: (p) => p.visualFormat || "" },
+        { key: "categoryConfidence", label: "Category confidence", value: (p) => p.categoryConfidence == null ? "" : Number(p.categoryConfidence || 0).toFixed(2) },
+        { key: "formatConfidence", label: "Format confidence", value: (p) => p.formatConfidence == null ? "" : Number(p.formatConfidence || 0).toFixed(2) },
+        { key: "classificationSource", label: "Classification source", value: (p) => p.classificationSource || "" },
+        { key: "classificationAt", label: "Classified at", value: (p) => p.classificationAt ? new Date(p.classificationAt).toISOString() : "" },
+        { key: "outlier", label: "Outlier score", value: (p) => Number(p._score || 0).toFixed(3) },
+      ],
+    },
+    {
+      title: "Metrics",
+      fields: [
+        { key: "views", label: "Views", value: (p) => p.views || 0 },
+        { key: "likes", label: "Likes", value: (p) => p.likes || 0 },
+        { key: "comments", label: "Comments", value: (p) => p.comments || 0 },
+        { key: "vph", label: "Views/hour", value: (p) => Number(p.vph || 0).toFixed(2) },
+        { key: "velocityPerHr", label: "Observed growth/hour", value: (p) => Number(p.velocityViewsPerHr || 0).toFixed(2) },
+        { key: "cpr", label: "CPR", value: (p) => Number(p.cpr || 0).toFixed(2) },
+        { key: "firstSeenViews", label: "First seen views", value: (p) => p.firstSeenViews || 0 },
+        { key: "snapshotCount", label: "Snapshot count", value: (p) => p.snapshotCount || 0 },
+      ],
+    },
+    {
+      title: "Content",
+      fields: [
+        { key: "caption", label: "Caption", value: (p) => p.desc || "" },
+        { key: "transcript", label: "Transcript", value: (p) => csvTranscriptText(p) },
+        { key: "transcriptSegments", label: "Transcript segments", value: (p) => csvTranscriptSegments(p) },
+        { key: "transcriptSource", label: "Transcript source", value: (p) => p.transcriptSource || p.captionSource || "" },
+        { key: "transcriptLang", label: "Transcript language", value: (p) => p.transcriptLang || p.captionLang || "" },
+        { key: "captionUrl", label: "Caption/transcript URL", value: (p) => p.captionUrl || "" },
+        { key: "captionSource", label: "Caption source", value: (p) => p.captionSource || "" },
+        { key: "accessibilityCaption", label: "Accessibility caption", value: (p) => p.accessibilityCaption || "" },
+        { key: "hashtags", label: "Hashtags", value: (p) => ((p.desc || "").match(/#[\w\u00C0-\u024F\u1E00-\u1EFF]+/g) || []).join(" ") },
+        { key: "hook", label: "Hook", value: (p) => csvAi(p).hook || p.hook || extractHook(p.desc || "") },
+        { key: "hookType", label: "Hook type", value: (p) => csvAi(p).hookType || hookTypeOf(p) || "" },
+        { key: "middle", label: "Middle/value summary", value: (p) => csvAi(p).middle || csvAi(p).middleSummary || "" },
+        { key: "cta", label: "CTA", value: (p) => csvAi(p).cta || "" },
+        { key: "ctaType", label: "CTA type", value: (p) => csvAi(p).ctaType || "" },
+        { key: "aiTopic", label: "Topic", value: (p) => csvAi(p).topic || "" },
+        { key: "aiAngle", label: "Angle", value: (p) => csvAi(p).angle || "" },
+        { key: "aiModel", label: "AI model", value: (p) => csvAi(p).model || "" },
+        { key: "aiAnalyzedAt", label: "AI analyzed at", value: (p) => csvAi(p).analyzedAt ? new Date(csvAi(p).analyzedAt).toISOString() : "" },
+      ],
+    },
+    {
+      title: "Links + IDs",
+      fields: [
+        { key: "url", label: "URL", value: (p) => p.url || "" },
+        { key: "id", label: "ID", value: (p) => p.id || "" },
+        { key: "shortcode", label: "Shortcode", value: (p) => p.shortcode || "" },
+        { key: "surface", label: "Surface", value: (p) => p.surface || "" },
+        { key: "productType", label: "Product type", value: (p) => p.productType || "" },
+        { key: "createdAt", label: "Posted at", value: (p) => p.createTime ? new Date(p.createTime * 1000).toISOString() : "" },
+        { key: "videoUrl", label: "Video URL", value: (p) => p.videoUrl || "" },
+        { key: "coverUrl", label: "Cover URL", value: (p) => p.cover || "" },
+      ],
+    },
+    {
+      title: "Workflow",
+      fields: [
+        { key: "pinned", label: "Pinned", value: (p) => getMetaSync(p.id)?.pinned ? "true" : "false" },
+        { key: "status", label: "Status", value: (p) => getMetaSync(p.id)?.status || "" },
+        { key: "note", label: "Note", value: (p) => getMetaSync(p.id)?.note || "" },
+        { key: "tags", label: "Tags", value: (p) => (getMetaSync(p.id)?.tags || []).join("|") },
+      ],
+    },
+    {
+      title: "Audio + context",
+      fields: [
+        { key: "audioTitle", label: "Audio title", value: (p) => (p.audio?.title) || "" },
+        { key: "audioArtist", label: "Audio artist", value: (p) => (p.audio?.artist) || "" },
+        { key: "audioOriginalAuthor", label: "Audio original author", value: (p) => (p.audio?.originalAuthor) || "" },
+        { key: "audioUseCount", label: "Audio use count", value: (p) => (p.audio?.useCount) || 0 },
+        { key: "audioIsOriginal", label: "Audio is original", value: (p) => (p.audio?.isOriginal) ? "true" : "false" },
+        { key: "usertags", label: "User tags", value: (p) => (p.usertags || []).join("|") },
+        { key: "coauthors", label: "Coauthors", value: (p) => (p.coauthors || []).join("|") },
+        { key: "locationName", label: "Location", value: (p) => (p.location?.name) || "" },
+      ],
+    },
+  ];
+  const CSV_LEGACY_ONLY_FIELDS = [
+    { key: "author", label: "author", value: (p) => p.author || "" },
+    { key: "createTime", label: "createTime", value: (p) => p.createTime ? new Date(p.createTime * 1000).toISOString() : "" },
+    { key: "desc", label: "desc", value: (p) => p.desc || "" },
+    { key: "carouselCount", label: "carouselCount", value: (p) => p.carouselCount || 0 },
+    { key: "audioId", label: "audioId", value: (p) => (p.audio?.id) || "" },
+    { key: "audioClusterId", label: "audioClusterId", value: (p) => p.audioClusterId || "" },
+    { key: "locationId", label: "locationId", value: (p) => (p.location?.id) || "" },
+    { key: "locationLat", label: "locationLat", value: (p) => (p.location?.lat) || "" },
+    { key: "locationLng", label: "locationLng", value: (p) => (p.location?.lng) || "" },
+    { key: "aiHook", label: "aiHook", value: (p) => csvAi(p).hook || p.hook || extractHook(p.desc || "") },
+    { key: "aiHookType", label: "aiHookType", value: (p) => csvAi(p).hookType || hookTypeOf(p) || "" },
+    { key: "aiModel", label: "aiModel", value: (p) => (p.ai?.model) || "" },
+    { key: "aiAnalyzedAt", label: "aiAnalyzedAt", value: (p) => (p.ai?.analyzedAt) ? new Date(p.ai.analyzedAt).toISOString() : "" },
+  ];
+  const CSV_FIELDS = CSV_FIELD_GROUPS.flatMap((g) => g.fields);
+  const CSV_FIELD_BY_KEY = new Map([...CSV_FIELDS, ...CSV_LEGACY_ONLY_FIELDS].map((f) => [f.key, f]));
+  const CSV_DEFAULT_FIELDS = [
+    "rank", "creator", "displayName", "category", "niche", "format", "contentFormat", "visualFormat", "categoryConfidence", "formatConfidence", "classificationSource", "outlier",
+    "views", "likes", "comments", "vph", "velocityPerHr", "cpr",
+    "caption", "transcript", "hook", "hookType", "middle", "cta", "ctaType", "aiTopic", "aiAngle", "url", "createdAt", "surface", "status", "tags",
+  ];
+  const CSV_LEGACY_FIELDS = [
+    "rank", "author", "id", "shortcode", "surface", "productType", "createTime",
+    "category", "niche", "format", "contentFormat", "visualFormat", "categoryConfidence", "formatConfidence", "classificationSource",
+    "likes", "views", "comments", "outlier",
+    "firstSeenViews", "velocityPerHr", "snapshotCount",
+    "desc", "transcript", "aiHook", "aiHookType", "middle", "cta", "ctaType", "url",
+    "carouselCount", "accessibilityCaption",
+    "audioId", "audioTitle", "audioArtist", "audioOriginalAuthor", "audioIsOriginal", "audioUseCount", "audioClusterId",
+    "usertags", "coauthors",
+    "locationId", "locationName", "locationLat", "locationLng",
+    "pinned", "status", "note", "tags",
+    "aiTopic", "aiAngle", "aiModel", "aiAnalyzedAt",
+  ];
+
+  const getCsvBaseRows = (selectedOnly) => {
     let rows;
     if (selectedOnly) {
-      // Use the visible/filtered ordering as the canonical row order so the
-      // CSV row indexes match what the user sees, but keep only selected.
       const sel = state.selected;
       rows = filtered().filter((p) => sel.has(p.id));
-      // Include selections that were filtered out (e.g. user changed limit
-      // after selecting). Append them at the end with score=0.
       const seen = new Set(rows.map((p) => p.id));
       for (const id of sel) {
         if (seen.has(id)) continue;
@@ -7775,60 +8310,65 @@
     } else {
       rows = filtered();
     }
-    const header = [
-      "rank","author","id","shortcode","surface","productType","createTime",
-      "likes","views","comments","outlier",
-      "firstSeenViews","velocityPerHr","snapshotCount",
-      "desc","url",
-      "carouselCount","accessibilityCaption",
-      "audioId","audioTitle","audioArtist","audioOriginalAuthor","audioIsOriginal","audioUseCount","audioClusterId",
-      "usertags","coauthors",
-      "locationId","locationName","locationLat","locationLng",
-      "pinned","status","note","tags",
-      "aiHook","aiHookType","aiTopic","aiAngle","aiModel","aiAnalyzedAt",
-    ];
-    const esc = (s) => `"${String(s ?? "").replace(/"/g, '""')}"`;
-    const lines = [header.join(",")];
+    return rows;
+  };
+
+  const enrichCsvRows = (rows) => {
     const nowMs = Date.now();
-    rows.forEach((p, i) => {
-      const au = p.audio || {};
-      const lo = p.location || {};
-      const me = getMetaSync(p.id) || {};
-      // `rows` may be from filtered() (already enriched) or pulled raw from
-      // `posts` (selectedOnly fallback path). Re-derive defensively.
-      const d = (p.velocityViewsPerHr === undefined) ? computeDerived(p, nowMs) : p;
-      lines.push([
-        i + 1, p.author, p.id, p.shortcode, p.surface, p.productType || "",
-        p.createTime ? new Date(p.createTime * 1000).toISOString() : "",
-        p.likes, p.views, p.comments,
-        (p._score || 0).toFixed(3),
-        d.firstSeenViews || 0,
-        (d.velocityViewsPerHr || 0).toFixed(2),
-        d.snapshotCount || 0,
-        esc(p.desc), p.url,
-        p.carouselCount || 0, esc(p.accessibilityCaption || ""),
-        au.id || "", esc(au.title || ""), esc(au.artist || ""), esc(au.originalAuthor || ""),
-        au.isOriginal ? "true" : "false", au.useCount || 0,
-        p.audioClusterId || "",
-        esc((p.usertags || []).join("|")),
-        esc((p.coauthors || []).join("|")),
-        lo.id || "", esc(lo.name || ""), lo.lat || "", lo.lng || "",
-        me.pinned ? "true" : "false",
-        esc(me.status || ""),
-        esc(me.note || ""),
-        esc((me.tags || []).join("|")),
-        esc((p.ai && p.ai.hook) || ""),
-        (p.ai && p.ai.hookType) || "",
-        esc((p.ai && p.ai.topic) || ""),
-        esc((p.ai && p.ai.angle) || ""),
-        (p.ai && p.ai.model) || "",
-        (p.ai && p.ai.analyzedAt) ? new Date(p.ai.analyzedAt).toISOString() : "",
-      ].join(","));
+    return rows.map((p) => {
+      const d = computeDerived(p, nowMs);
+      const cpr = (p.comments || 0) / Math.max(p.likes || 0, 1) * 1000;
+      const vph = vphSincePosted(p, nowMs);
+      return { ...p, ...d, velocity: d.velocityViewsPerHr, cpr, vph };
     });
-    const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  };
+
+  const sortCsvRows = (rows, sortKey) => {
+    const key = sortKey || "current";
+    if (key === "current") return rows;
+    const prefs = (() => {
+      const lib = (typeof globalThis !== "undefined" && globalThis.__fsRelevance) || null;
+      if (!lib) return {};
+      return state.relevancePrefs && typeof state.relevancePrefs === "object" ? state.relevancePrefs : lib.LEARNING_MODES.hybrid();
+    })();
+    const rel = (p) => {
+      const lib = (typeof globalThis !== "undefined" && globalThis.__fsRelevance) || null;
+      return lib ? (lib.scoreRelevanceFromPost(p, prefs).score || 0) : 0;
+    };
+    const text = (v) => String(v || "").toLowerCase();
+    return [...rows].sort((a, b) => {
+      if (key === "relevance") return rel(b) - rel(a);
+      if (key === "outlier") return (Number(b._score) || 0) - (Number(a._score) || 0);
+      if (key === "recent") return (Number(b.createTime) || 0) - (Number(a.createTime) || 0);
+      if (key === "velocity") return (Number(b.velocityViewsPerHr) || 0) - (Number(a.velocityViewsPerHr) || 0);
+      if (key === "vph") return (Number(b.vph) || 0) - (Number(a.vph) || 0);
+      if (key === "cpr") return (Number(b.cpr) || 0) - (Number(a.cpr) || 0);
+      if (key === "niche") return text(a.niche || a.category || a.ai?.niche).localeCompare(text(b.niche || b.category || b.ai?.niche)) || (Number(b._score) || 0) - (Number(a._score) || 0);
+      if (key === "format") return text(a.format || a.visualFormat || a.contentFormat).localeCompare(text(b.format || b.visualFormat || b.contentFormat)) || (Number(b._score) || 0) - (Number(a._score) || 0);
+      if (key === "creator") return text(a.author).localeCompare(text(b.author)) || (Number(b._score) || 0) - (Number(a._score) || 0);
+      if (key === "transcript") return Number(!!b.transcript) - Number(!!a.transcript) || (Number(b._score) || 0) - (Number(a._score) || 0);
+      return (Number(b[key]) || 0) - (Number(a[key]) || 0);
+    });
+  };
+
+  const csvEscape = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+  const buildCsvText = (rows, fields, { bom = true, header = "label" } = {}) => {
+    const active = fields.map((k) => CSV_FIELD_BY_KEY.get(k)).filter(Boolean);
+    const headerValues = active.map((f) => header === "key" ? f.key : f.label);
+    const lines = [headerValues.map(csvEscape).join(",")];
+    rows.forEach((p, idx) => {
+      const ctx = { rank: idx + 1 };
+      lines.push(active.map((f) => csvEscape(f.value(p, ctx))).join(","));
+    });
+    return `${bom ? "\ufeff" : ""}${lines.join("\r\n")}\r\n`;
+  };
+
+  const downloadCsvRows = (rows, fields, opts = {}) => {
+    const selectedOnly = !!opts.selectedOnly;
+    const sortKey = opts.sortKey || state.sort;
+    const blob = new Blob([buildCsvText(rows, fields, { bom: opts.bom !== false, header: opts.header || "label" })], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    // ig_{scope}_{surface}_{sort-by-metric}_{rows}_{YYYY-MM-DD_HHMM}.csv
     const d = new Date();
     const pad = (n) => String(n).padStart(2, "0");
     const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`;
@@ -7837,15 +8377,107 @@
       : pageScope.kind === "explore"
         ? "explore"
         : "page";
-    const sortPart = state.sort === "outlier"
-      ? `outlier-${state.metric}`
-      : state.sort;
+    const sortPart = sortKey === "outlier" ? `outlier-${state.metric}` : sortKey;
     const surfacePart = state.surface === "all" ? "" : `_${state.surface}`;
     const rangePart = state.range === "all" ? "" : `_${state.range}`;
     const countPart = selectedOnly ? `_selected${rows.length}_` : `_${rows.length}_`;
     a.download = `${PLATFORM_CSV_PREFIX}_${scopePart}${surfacePart}_${sortPart}${rangePart}${countPart}${stamp}.csv`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    setStatus(`exported CSV (${rows.length} rows)`);
+  };
+
+  const exportCSV = (opts = {}) => {
+    const selectedOnly = !!opts.selectedOnly;
+    const sortKey = opts.sortKey || "current";
+    const fields = opts.fields || CSV_LEGACY_FIELDS;
+    const rows = sortCsvRows(enrichCsvRows(getCsvBaseRows(selectedOnly)), sortKey);
+    downloadCsvRows(rows, fields, {
+      selectedOnly,
+      sortKey,
+      bom: opts.bom === undefined ? false : opts.bom,
+      header: opts.header || "key",
+    });
+  };
+
+  const openCsvExportModal = (opts = {}) => {
+    const selectedOnlyDefault = !!opts.selectedOnly;
+    const previewRows = getCsvBaseRows(selectedOnlyDefault);
+    const fieldSet = new Set(CSV_DEFAULT_FIELDS);
+    const fieldHtml = CSV_FIELD_GROUPS.map((group) => `
+      <fieldset class="fs-csv-fieldset">
+        <legend>${escHTML(group.title)}</legend>
+        <div class="fs-csv-checks">
+          ${group.fields.map((f) => `
+            <label class="fs-csv-check"><input type="checkbox" data-csv-field="${escHTML(f.key)}" ${fieldSet.has(f.key) ? "checked" : ""}> ${escHTML(f.label)}</label>
+          `).join("")}
+        </div>
+      </fieldset>
+    `).join("");
+    const sortOptions = CSV_SORT_OPTIONS.map((o) => `<option value="${escHTML(o.key)}" ${o.key === "current" ? "selected" : ""}>${escHTML(o.label)}</option>`).join("");
+    const m = openModal("Export CSV", `
+      <div class="fs-csv-export">
+        <p class="fs-csv-help">Download a UTF-8 CSV that opens cleanly in Excel, Google Sheets, and Apple Numbers. Choose ordering and columns like niche, format, creator, transcript, and outlier score.</p>
+        <div class="fs-csv-row">
+          <label>Rows
+            <select data-csv-rows>
+              <option value="visible" ${selectedOnlyDefault ? "" : "selected"}>Current visible rows (${filtered().length})</option>
+              <option value="selected" ${selectedOnlyDefault ? "selected" : ""} ${state.selected.size ? "" : "disabled"}>Selected rows (${state.selected.size})</option>
+            </select>
+          </label>
+          <label>Order by
+            <select data-csv-sort>${sortOptions}</select>
+          </label>
+        </div>
+        <div class="fs-csv-presets">
+          <button class="fs-chip" data-csv-preset="research" type="button">Research</button>
+          <button class="fs-chip" data-csv-preset="metrics" type="button">Metrics</button>
+          <button class="fs-chip" data-csv-preset="transcripts" type="button">Transcripts</button>
+          <button class="fs-chip" data-csv-preset="all" type="button">All columns</button>
+        </div>
+        <div class="fs-csv-fields">${fieldHtml}</div>
+        <label class="fs-csv-bom"><input type="checkbox" data-csv-bom checked> Excel compatibility marker (UTF-8 BOM)</label>
+        <div class="fs-settings-actions">
+          <button class="fs-icon-btn fs-primary" data-act="csv-download">Download CSV</button>
+          <span class="fs-help" data-csv-status>${previewRows.length} row${previewRows.length === 1 ? "" : "s"} ready</span>
+        </div>
+      </div>
+    `);
+    const setFields = (keys) => {
+      const wanted = new Set(keys);
+      m.querySelectorAll("[data-csv-field]").forEach((el) => { el.checked = wanted.has(el.dataset.csvField); });
+    };
+    const presets = {
+      research: CSV_DEFAULT_FIELDS,
+      metrics: ["rank", "creator", "category", "niche", "format", "contentFormat", "visualFormat", "categoryConfidence", "formatConfidence", "classificationSource", "outlier", "views", "likes", "comments", "vph", "velocityPerHr", "cpr", "url"],
+      transcripts: ["rank", "creator", "category", "niche", "format", "contentFormat", "visualFormat", "categoryConfidence", "formatConfidence", "classificationSource", "outlier", "caption", "transcript", "transcriptSegments", "hook", "hookType", "middle", "cta", "ctaType", "aiTopic", "aiAngle", "transcriptSource", "transcriptLang", "captionUrl", "url"],
+      all: CSV_FIELDS.map((f) => f.key),
+    };
+    m.addEventListener("click", (ev) => {
+      const t = ev.target.closest("[data-csv-preset], [data-act]");
+      if (!t) return;
+      if (t.dataset.csvPreset) {
+        ev.preventDefault();
+        setFields(presets[t.dataset.csvPreset] || CSV_DEFAULT_FIELDS);
+        return;
+      }
+      if (t.dataset.act === "csv-download") {
+        ev.preventDefault();
+        const rowMode = m.querySelector("[data-csv-rows]")?.value || "visible";
+        const selectedOnly = rowMode === "selected";
+        const sortKey = m.querySelector("[data-csv-sort]")?.value || "current";
+        const fields = [...m.querySelectorAll("[data-csv-field]:checked")].map((el) => el.dataset.csvField);
+        if (!fields.length) {
+          const st = m.querySelector("[data-csv-status]");
+          if (st) st.textContent = "Choose at least one column.";
+          return;
+        }
+        const rows = sortCsvRows(enrichCsvRows(getCsvBaseRows(selectedOnly)), sortKey);
+        downloadCsvRows(rows, fields, { selectedOnly, sortKey, bom: !!m.querySelector("[data-csv-bom]")?.checked });
+        logInfo("export.csv", { rows: rows.length, selectedOnly, sortKey, fields: fields.length });
+        closeModal();
+      }
+    });
   };
 
   // -------- IDB rehydrate --------
@@ -7859,7 +8491,7 @@
     try {
       const rows = await window.__fsStore.getAllMeta();
       for (const m of rows || []) {
-        if (m && m.id) metaCache.set(String(m.id), m);
+        if (m?.id) metaCache.set(String(m.id), m);
       }
       logDebug("meta.load", { rows: rows?.length || 0 });
     } catch (e) {
@@ -7874,7 +8506,7 @@
       const rows = await window.__fsStore.getPinnedPosts();
       pinnedPosts.clear();
       for (const p of rows || []) {
-        if (p && p.id) pinnedPosts.set(p.id, p);
+        if (p?.id) pinnedPosts.set(p.id, p);
       }
       logDebug("pinned.load", { rows: rows?.length || 0 });
     } catch (e) {
@@ -7904,7 +8536,7 @@
           p.author.toLowerCase() !== pageScope.username && state.scope !== "alltime") {
         continue;
       }
-      if (state.scope !== "alltime" && !isCurrentDetailVideo(p)) continue;
+      if (state.scope !== "alltime" && !isCurrentDetailVideo(p) && !sessionIds.has(p.id)) continue;
       // Don't blow away records we already merged in this session.
       if (!posts.has(p.id)) {
         const normalized = isYouTubePost(p) ? { ...p, platform: "youtube", surface: "shorts-feed" } : p;
@@ -7918,6 +8550,7 @@
       rows: rows?.length || 0,
       kept,
       total: posts.size,
+      sessionIds: sessionIds.size,
     });
     render();
     if (PLATFORM.platform === "youtube") scheduleYouTubeDomHydration("rehydrate");
@@ -8041,60 +8674,52 @@
     }
   };
 
-  // Mirror of src/analysis/post-analysis.js detectFormat() — keep in sync.
-  // Pure rule-based (no LLM); first match wins.
-  const FORMATS = ["list", "story", "tip", "tutorial", "hottake", "reaction", "dayinlife", "beforeafter", "other"];
-  const detectFormat = (p) => {
-    const desc = String((p && p.desc) || "");
-    const lower = desc.toLowerCase();
-    const trimmed = desc.trim();
-    const lowerTrimmed = trimmed.toLowerCase();
-    const segs = Array.isArray(p && p.transcriptSegments) ? p.transcriptSegments : null;
-    const transcript = (segs && segs.length
-      ? segs.map((s) => String((s && s.text) || "")).join(" ")
-      : String((p && p.transcript) || "")).toLowerCase();
-    if (/^\d+[.\s]/.test(trimmed)) return "list";
-    const lines = desc.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    if (lines.filter((l) => /^([-•]|\d+\.)\s*\S/.test(l)).length >= 3) return "list";
-    if (/\bstep\s*1\b/.test(lower) || /\bhow to\b/.test(lower) || /\btutorial\b/.test(lower)
-      || /\bguide\b/.test(lower) || /\bstep\s*1\b/.test(transcript) || /\bstep\s*one\b/.test(transcript)) return "tutorial";
-    if ((/\bbefore\b/.test(lower) && /\bafter\b/.test(lower)) || /\btransformation\b/.test(lower) || /\bresults\b/.test(lower)) return "beforeafter";
-    if (/\bday in (my )?life\b/.test(lower) || /\bday in\b/.test(lower) || /\bmorning routine\b/.test(lower) || /\bdaily routine\b/.test(lower)) return "dayinlife";
-    if (/\breact(ing)?\b/.test(lower) || /\bmy thoughts on\b/.test(lower) || /\bwatching\b/.test(lower)) return "reaction";
-    if (/\bunpopular opinion\b/.test(lower) || /\bhot take\b/.test(lower) || /i['’]ll say it\b/.test(lower) || /\bcontroversial\b/.test(lower)) return "hottake";
-    if (/\btip:\s/.test(lower) || /\bpro tip\b/.test(lower) || /\bquick tip\b/.test(lower) || /^if you\s+\S+/.test(lowerTrimmed)) return "tip";
-    const wordCount = trimmed.split(/\s+/).filter(Boolean).length;
-    const fp = (lower.match(/\b(i|me|my|we)\b/g) || []).length;
-    if (fp >= 3 && wordCount >= 30) return "story";
-    return "other";
+  // Rule-based CSV classification from caption + full transcript. The ESM spec
+  // lives in src/analysis/post-analysis.js; this content script calls the IIFE
+  // runtime mirror exposed as globalThis.__fsPostAnalysis.
+  const classifyPostForCsv = async (post, { quiet = false } = {}) => {
+    const lib = (typeof globalThis !== "undefined" && globalThis.__fsPostAnalysis) || null;
+    const store = window.__fsStore;
+    if (!post || !post.id || !lib || typeof lib.classifyForCsv !== "function") return null;
+    const classification = lib.classifyForCsv(post);
+    try {
+      let merged = null;
+      if (store && typeof store.setPostClassification === "function") {
+        merged = await store.setPostClassification(post.id, classification);
+      } else if (store && typeof store.setPostFormat === "function") {
+        await store.setPostFormat(post.id, classification.format);
+        merged = { ...post, format: classification.format };
+      } else {
+        merged = { ...post, ...classification };
+      }
+      if (merged) {
+        const live = posts.get(post.id);
+        posts.set(post.id, { ...(live || post), ...merged });
+      }
+      return merged;
+    } catch (e) {
+      if (!quiet) logWarn("csv.classify.fail", e, { id: post.id });
+      return null;
+    }
   };
 
-  // Run rule-based detectFormat() on every post in the current Stats scope
-  // and persist the labels via setPostFormat. Instant; toast confirms count.
   const runDetectFormats = async () => {
     const scope = statsScope();
     if (!scope.length) { setStatus("no posts in scope"); return; }
-    const store = window.__fsStore;
-    if (!store || typeof store.setPostFormat !== "function") {
-      setStatus("format detect: store unavailable");
+    const lib = (typeof globalThis !== "undefined" && globalThis.__fsPostAnalysis) || null;
+    if (!lib || typeof lib.classifyForCsv !== "function") {
+      setStatus("CSV classifier unavailable");
       return;
     }
-    let n = 0, fail = 0;
+    let n = 0;
+    let fail = 0;
     for (const p of scope) {
-      try {
-        const f = detectFormat(p);
-        if (!FORMATS.includes(f)) continue;
-        await store.setPostFormat(p.id, f);
-        const live = posts.get(p.id);
-        if (live) live.format = f;
-        n += 1;
-      } catch (e) {
-        fail += 1;
-        logWarn("format.detect.fail", e, { id: p.id });
-      }
+      const merged = await classifyPostForCsv(p);
+      if (merged) n += 1;
+      else fail += 1;
     }
-    logInfo("format.detect.done", { n, fail, scope: scope.length });
-    setStatus(`detected formats on ${n} post${n === 1 ? "" : "s"}${fail ? ` · ${fail} failed` : ""}`);
+    logInfo("csv.classify.done", { n, fail, scope: scope.length });
+    setStatus(`classified CSV fields on ${n} post${n === 1 ? "" : "s"}${fail ? ` · ${fail} failed` : ""}`);
     render();
   };
 
@@ -8122,7 +8747,7 @@
         chrome.runtime.sendMessage({ type: "fs-bg", cmd: "embed-texts", texts }, (resp) => {
           const lerr = chrome.runtime.lastError;
           if (lerr) { reject(new Error(String(lerr.message || lerr))); return; }
-          if (!resp || !resp.ok) { reject(new Error(String(resp && resp.err || "embed failed"))); return; }
+          if (!resp || !resp.ok) { reject(new Error(String(resp?.err || "embed failed"))); return; }
           resolve(resp.vectors || []);
         });
       } catch (e) { reject(e); }
@@ -8135,7 +8760,7 @@
       get: async (key) => {
         try {
           const row = await store.getPipelineStep(`cluster::${key}`, "niche-label");
-          return row && row.payload ? row.payload.label : null;
+          return row?.payload ? row.payload.label : null;
         } catch { return null; }
       },
       set: async (key, label) => {
@@ -8173,8 +8798,8 @@
           }
         },
       });
-      const cached = labeled.filter((c) => c && c.fromCache).length;
-      const fresh = labeled.filter((c) => c && c.label && !c.fromCache).length;
+      const cached = labeled.filter((c) => c?.fromCache).length;
+      const fresh = labeled.filter((c) => c?.label && !c.fromCache).length;
       state.nicheClusterStatus = `${labeled.length} cluster${labeled.length === 1 ? "" : "s"} · ${fresh} new · ${cached} cached`;
       logInfo("niche.cluster.label.end", {
         scope: scope.length,
@@ -8188,7 +8813,7 @@
       setStatus(`niches: ${labeled.length} cluster${labeled.length === 1 ? "" : "s"} labeled`);
     } catch (e) {
       logWarn("niche.cluster.label.fail", e);
-      state.nicheClusterStatus = `failed: ${String(e && e.message || e).slice(0, 60)}`;
+      state.nicheClusterStatus = `failed: ${String(e?.message || e).slice(0, 60)}`;
       setStatus("niche cluster failed");
     } finally {
       state.nicheClusterBusy = false;
@@ -8234,7 +8859,7 @@
       postCount: postsForCluster.length,
       creatorCount: creatorsForCluster.length,
       bioCovered,
-      bioCoverage: creatorsForCluster.length ? Math.round(100 * bioCovered / creatorsForCluster.length) + "%" : "0%",
+      bioCoverage: creatorsForCluster.length ? `${Math.round(100 * bioCovered / creatorsForCluster.length)}%` : "0%",
     });
     try {
       chrome.runtime.sendMessage({
@@ -8260,7 +8885,7 @@
       try {
         const r = await new Promise((res) => chrome.runtime.sendMessage({ type: "fs-bg", cmd: "cluster-meta" }, res));
         const meta = r?.meta;
-        if (meta && meta.lastRunAt && meta.lastRunAt > prevAt) {
+        if (meta?.lastRunAt && meta.lastRunAt > prevAt) {
           await reloadCreators();
           const n = meta.clusters?.length || 0;
           setBadge(`${n} niche${n === 1 ? "" : "s"} · ${Math.round(meta.ms || 0)}ms`);
@@ -8335,7 +8960,7 @@
     logInfo("report.start", { username: u });
     try {
       const res = await window.__fsReport.generate(u);
-      if (res && res.ok) {
+      if (res?.ok) {
         logInfo("report.ok", res);
         setStatus(`saved ${res.filename} (${res.posts} posts)`);
       } else {
@@ -8351,10 +8976,10 @@
   const fmtAge = (t) => {
     if (!t) return "never";
     const s = Math.floor((Date.now() - t) / 1000);
-    if (s < 60) return s + "s ago";
-    if (s < 3600) return Math.floor(s / 60) + "m ago";
-    if (s < 86400) return Math.floor(s / 3600) + "h ago";
-    return Math.floor(s / 86400) + "d ago";
+    if (s < 60) return `${s}s ago`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+    return `${Math.floor(s / 86400)}d ago`;
   };
 
   // -------- Niche tab render --------
@@ -8376,7 +9001,7 @@
       const all = await window.__fsStore.getAllVoices();
       const by = new Map();
       for (const v of all || []) {
-        if (v && v.username) by.set(v.username, v);
+        if (v?.username) by.set(v.username, v);
       }
       voiceCache = { at: Date.now(), by };
     } catch (e) {
@@ -8559,7 +9184,7 @@
     aiSync("aiProvider", state.ai.provider);
     applyProviderUi();
     // Populate Groq dropdowns from cache, then trigger a (cached) refresh.
-    populateGroqDropdowns(state.ai.groq.modelsCache && state.ai.groq.modelsCache.models || []);
+    populateGroqDropdowns(state.ai.groq.modelsCache?.models || []);
     refreshGroqModels().catch(() => {});
     checkAiHealth().catch(() => {});
     if (window.__fsStore && els.setInfo) {
@@ -8624,7 +9249,7 @@
       return;
     }
     const inScope = (all || []).filter(
-      (p) => p && p.author && tracked.has(p.author.toLowerCase())
+      (p) => p?.author && tracked.has(p.author.toLowerCase())
     );
     const days = RANGES[state.radarRange] || 0;
     const cutoff = days ? Date.now() / 1000 - days * 86400 : 0;
@@ -8750,13 +9375,13 @@
       };
       try {
         const res = await window.__fsStore.addSignal(sig);
-        if (res && res.row) {
+        if (res?.row) {
           signalsCache.set(res.row.id, res.row);
           if (res.isNew) {
             fresh.push(res.row);
             logInfo("hook.match", {
               new: { id: c.id, author: newAuthor },
-              hist: { id: best.post.id, author: sig.histAuthor, score: sig.histScore.toFixed(2) + "x" },
+              hist: { id: best.post.id, author: sig.histAuthor, score: `${sig.histScore.toFixed(2)}x` },
               similarity: Number(sig.similarity.toFixed(3)),
             });
           }
@@ -8813,7 +9438,7 @@
     setStatus("rescanning signals…");
     const all = await window.__fsStore.getAll();
     const scored = computeStoreOutliers(all || []);
-    const candidates = scored.filter((p) => p && p.hook);
+    const candidates = scored.filter((p) => p?.hook);
     const fresh = await detectHookSignals(candidates, scored);
     setStatus(`rescan done — ${fresh.length} new signal${fresh.length === 1 ? "" : "s"}`);
     logInfo("signals.rescan.done", { candidates: candidates.length, fresh: fresh.length });
@@ -8921,7 +9546,7 @@
       if (!p.ai || !p.ai.hook) continue;
       const ht = p.ai.hookType || "other";
       const tp = p.ai.topic || "(unknown)";
-      const key = ht + "\u0001" + tp;
+      const key = `${ht}\u0001${tp}`;
       let b = buckets.get(key);
       if (!b) {
         b = { hookType: ht, topic: tp, n: 0, scores: [], angles: new Map(), examples: [] };
@@ -8959,7 +9584,7 @@
     if (els.soundsPanel) {
       els.soundsPanel.querySelectorAll("[data-sound-chip]").forEach((c) => {
         const k = c.dataset.soundChip;
-        const on = !!state["audio" + k[0].toUpperCase() + k.slice(1)];
+        const on = !!state[`audio${k[0].toUpperCase()}${k.slice(1)}`];
         c.classList.toggle("fs-chip-active", on);
       });
     }
@@ -9049,7 +9674,7 @@
   const loadWebhookConfig = async () => {
     try {
       const r = await chrome.storage.local.get(WH_KEY);
-      const cfg = r && r[WH_KEY];
+      const cfg = r?.[WH_KEY];
       if (cfg && typeof cfg === "object") {
         state.webhooks = {
           generic: String(cfg.generic || ""),
@@ -9265,7 +9890,7 @@
   const loadSinkConfig = async () => {
     try {
       const r = await chrome.storage.local.get(SINKS_KEY);
-      const cfg = r && r[SINKS_KEY];
+      const cfg = r?.[SINKS_KEY];
       if (cfg && typeof cfg === "object") {
         for (const k of Object.keys(state.sinks)) {
           if (cfg[k] && typeof cfg[k] === "object") {
@@ -9309,7 +9934,7 @@
   };
 
   const runSinkTest = async (name) => {
-    const reg = window.__fsSinks && window.__fsSinks.sinks[name];
+    const reg = window.__fsSinks?.sinks[name];
     if (!reg) { setSinkStatus(name, "sink not loaded", "error"); return; }
     setSinkStatus(name, "testing…");
     logInfo(`sink.${name}.test.start`);
@@ -9319,15 +9944,17 @@
   };
 
   const runSinkSync = async (name, rows) => {
-    const reg = window.__fsSinks && window.__fsSinks.sinks[name];
+    const reg = window.__fsSinks?.sinks[name];
     if (!reg) { setSinkStatus(name, "sink not loaded", "error"); return { ok: false }; }
     if (!rows || !rows.length) { setSinkStatus(name, "no posts in current view", "warn"); return { ok: false }; }
     const total = rows.length;
-    let done = 0, ok = 0, fail = 0;
+    let _done = 0;
+    let ok = 0;
+    let fail = 0;
     setSinkStatus(name, `syncing 0/${total}…`);
     logInfo(`sink.${name}.sync.start`, { rows: total });
     const onProgress = (i, n, status) => {
-      done = i;
+      _done = i;
       if (status === "ok") ok++; else fail++;
       // Throttle UI updates to every 5 rows or last row.
       if (i === n || i % 5 === 0) setSinkStatus(name, `syncing ${i}/${n} · ✓${ok} ✗${fail}`);
@@ -9337,8 +9964,8 @@
     const ms = Date.now() - t0;
     logInfo(`sink.${name}.sync.done`, { sent: res.sent, failed: res.failed, ms, errs: (res.errors || []).slice(0, 3) });
     const tone = res.ok ? "info" : (res.sent ? "warn" : "error");
-    let msg = `${res.sent}/${total} ok` + (res.failed ? ` · ${res.failed} failed` : "") + ` · ${(ms / 1000).toFixed(1)}s`;
-    if (res.errors && res.errors.length) msg += ` — ${res.errors[0]}`;
+    let msg = `${res.sent}/${total} ok${res.failed ? ` · ${res.failed} failed` : ""} · ${(ms / 1000).toFixed(1)}s`;
+    if (res.errors?.length) msg += ` — ${res.errors[0]}`;
     setSinkStatus(name, msg, tone);
     return res;
   };
@@ -9386,8 +10013,11 @@
   const boot = () => {
     if (!document.body) return setTimeout(boot, 50);
     pageScope = deriveScope();
+    loadStoredSessionIds(pageScope);
     suppressHashSync = true;
     restoreFromHash();
+    const bootResume = readCollectResume(pageScope);
+    if (bootResume && bootResume.active === true) applyCollectResumeState(bootResume);
     suppressHashSync = false;
     loadWebhookConfig().catch(() => {});
     loadSinkConfig().catch(() => {});
@@ -9440,10 +10070,12 @@
           await loadSignalsCache();
           render();
           updateView();
+          scheduleTikTokExploreResume(bootResume || readCollectResume(pageScope));
         })
         .catch((e) => logError("store.init.fail", e));
     } else {
       logWarn("store.missing", { hint: "src/store.js not loaded" });
+      scheduleTikTokExploreResume(bootResume || readCollectResume(pageScope));
     }
   };
   boot();

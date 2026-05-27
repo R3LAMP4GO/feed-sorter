@@ -3,7 +3,7 @@
 //
 // Exposes globalThis.__fsTranscribeCascade = { runCascade, TIERS_FOR_MODE }.
 
-(function (root) {
+((root) => {
   const TIERS_FOR_MODE = Object.freeze({
     "auto": Object.freeze(["free", "groq", "hf", "sidecar"]),
     "free-only": Object.freeze(["free"]),
@@ -17,7 +17,7 @@
     const clock = typeof now === "function" ? now : () => Date.now();
 
     for (const name of order) {
-      const fn = tiers && tiers[name];
+      const fn = tiers?.[name];
       if (typeof fn !== "function") continue;
       const t0 = clock();
       let result = null;

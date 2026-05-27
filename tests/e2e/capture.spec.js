@@ -2,7 +2,8 @@ import { test, expect } from "@playwright/test";
 import { startStubServer } from "./stub-server.mjs";
 import { launchWithExtension } from "./helpers.js";
 
-let server, ext;
+let server;
+let ext;
 
 test.beforeAll(async () => {
   server = await startStubServer();
@@ -12,6 +13,34 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   if (ext) await ext.close();
   if (server) await server.stop();
+});
+
+test("capture: /api/graphql timeline responses populate window.fs.posts()", async () => {
+  const page = await ext.context.newPage();
+  await page.goto(`${server.origin}/zachking/?apiGraphql=1`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => !!window.fs, null, { timeout: 10_000 });
+
+  await expect
+    .poll(
+      async () => {
+        const posts = await page.evaluate(() => window.fs.posts());
+        return posts.length;
+      },
+      { timeout: 8_000, intervals: [200, 400, 800] }
+    )
+    .toBeGreaterThanOrEqual(2);
+
+  const posts = await page.evaluate(() => window.fs.posts());
+  expect(posts.map((p) => p.shortcode).sort()).toEqual(["Gabc111", "Gabc222"]);
+  expect(posts.every((p) => String(p.id).startsWith("ig_"))).toBe(true);
+
+  const fsLogs = await page.evaluate(() => window.fs.logs());
+  const capture = fsLogs.find((e) => e.event === "capture" && e.url === "/api/graphql");
+  expect(capture).toBeTruthy();
+  expect(capture.surface).toBe("profile");
+  expect(capture.parsed).toBe(2);
+
+  await page.close();
 });
 
 test("capture: feed + clips fixtures populate window.fs.posts()", async () => {

@@ -16,11 +16,22 @@ const KEYS = {
 };
 
 const DEFAULTS = {
-  apiBase: 'http://localhost:8787',
-  appUrl: 'http://localhost:3000',
+  apiBase: 'https://api-production-5667.up.railway.app',
+  appUrl: 'https://web-production-4e825.up.railway.app',
   whisperx: 'http://localhost:8788',
   ollama: 'http://localhost:11434',
 };
+
+function normalizeManagedUrl(value, kind) {
+  const raw = String(value || '').trim().replace(/\/+$/, '');
+  if (!raw) return kind === 'api' ? DEFAULTS.apiBase : DEFAULTS.appUrl;
+  try {
+    const u = new URL(raw);
+    if (kind === 'api' && u.hostname === 'api.feedsorter.app') return DEFAULTS.apiBase;
+    if (kind === 'app' && (u.hostname === 'app.feedsorter.app' || u.hostname === 'feedsorter.app')) return DEFAULTS.appUrl;
+  } catch (_) {}
+  return raw;
+}
 
 function read(keys) {
   return new Promise((resolve) => chrome.storage.local.get(keys, resolve));
@@ -42,7 +53,7 @@ function send(cmd, payload) {
 function deriveAppUrl(apiBaseUrl) {
   try {
     const u = new URL(apiBaseUrl);
-    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return 'http://' + u.hostname + ':3000';
+    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return `http://${u.hostname}:3000`;
     return DEFAULTS.appUrl;
   } catch (_) {
     return DEFAULTS.appUrl;
@@ -59,7 +70,7 @@ function flash(elId, text, ms) {
 function setPill(id, kind, text) {
   const el = $(id);
   if (!el) return;
-  el.className = 'pill ' + kind;
+  el.className = `pill ${kind}`;
   el.textContent = text;
 }
 
@@ -70,7 +81,7 @@ async function refreshAccount() {
   $('acctErr').textContent = '';
   const cfg = await send('api.config');
   const stored = await read([KEYS.appUrl]);
-  cachedAppUrl = stored[KEYS.appUrl] || deriveAppUrl(cfg.baseUrl || DEFAULTS.apiBase);
+  cachedAppUrl = normalizeManagedUrl(stored[KEYS.appUrl] || deriveAppUrl(cfg.baseUrl || DEFAULTS.apiBase), 'app');
 
   if (!cfg.token) {
     $('acctStatus').textContent = 'Not signed in';
@@ -85,7 +96,7 @@ async function refreshAccount() {
     const tier = me.body.tier || 'free';
     $('acctTier').style.display = 'inline-block';
     $('acctTier').textContent = tier;
-    $('acctTier').className = 'pill ' + (tier === 'pro' || tier === 'studio' ? tier : '');
+    $('acctTier').className = `pill ${tier === 'pro' || tier === 'studio' ? tier : ''}`;
     $('bsTier').textContent = tier;
     $('bsEmail').textContent = me.body.email || '';
   } else if (me.status === 401) {
@@ -93,18 +104,18 @@ async function refreshAccount() {
     $('acctErr').textContent = 'Session expired — please reconnect.';
   } else {
     $('acctStatus').textContent = 'Not signed in';
-    $('acctErr').textContent = me.err || ('API ' + (me.status || '?'));
+    $('acctErr').textContent = me.err || (`API ${me.status || '?'}`);
   }
 }
 
-$('signin').addEventListener('click', () => chrome.tabs.create({ url: cachedAppUrl + '/connect' }));
+$('signin').addEventListener('click', () => chrome.tabs.create({ url: `${cachedAppUrl}/connect` }));
 $('openWeb').addEventListener('click', () => chrome.tabs.create({ url: cachedAppUrl }));
 
 // ---- Backend --------------------------------------------------------------
 async function loadBackend() {
   const stored = await read([KEYS.apiBase, KEYS.appUrl]);
-  $('apiBaseUrl').value = stored[KEYS.apiBase] || DEFAULTS.apiBase;
-  $('appUrl').value = stored[KEYS.appUrl] || '';
+  $('apiBaseUrl').value = normalizeManagedUrl(stored[KEYS.apiBase], 'api');
+  $('appUrl').value = stored[KEYS.appUrl] ? normalizeManagedUrl(stored[KEYS.appUrl], 'app') : ''; 
   await probeHealth();
 }
 
@@ -114,24 +125,24 @@ async function probeHealth() {
   setPill('apiHealth', '', 'checking…');
   $('bsHealth').textContent = 'checking…';
   try {
-    const r = await fetch(base.replace(/\/+$/, '') + '/healthz', { credentials: 'omit' });
+    const r = await fetch(`${base.replace(/\/+$/, '')}/healthz`, { credentials: 'omit' });
     if (r.ok) {
       setPill('apiHealth', 'ok', 'reachable');
       $('bsHealth').textContent = 'reachable (200)';
     } else {
-      setPill('apiHealth', 'warn', 'http ' + r.status);
-      $('bsHealth').textContent = 'http ' + r.status;
+      setPill('apiHealth', 'warn', `http ${r.status}`);
+      $('bsHealth').textContent = `http ${r.status}`;
     }
-  } catch (e) {
+  } catch (_e) {
     setPill('apiHealth', 'err', 'unreachable');
     $('bsHealth').textContent = 'unreachable';
   }
 }
 
 $('saveBackend').addEventListener('click', async () => {
-  const apiBase = ($('apiBaseUrl').value.trim() || DEFAULTS.apiBase).replace(/\/+$/, '');
+  const apiBase = normalizeManagedUrl($('apiBaseUrl').value, 'api');
   const appU = $('appUrl').value.trim();
-  await write({ [KEYS.apiBase]: apiBase, [KEYS.appUrl]: appU || deriveAppUrl(apiBase) });
+  await write({ [KEYS.apiBase]: apiBase, [KEYS.appUrl]: appU ? normalizeManagedUrl(appU, 'app') : deriveAppUrl(apiBase) });
   await send('api.set-base', { baseUrl: apiBase });
   flash('saveBackendStatus', '✓ saved');
   await refreshAccount();
@@ -155,8 +166,8 @@ async function probeWhisperx() {
   }
   setPill('whisperxHealth', '', 'checking…');
   try {
-    const r = await fetch(url + '/healthz', { credentials: 'omit' });
-    setPill('whisperxHealth', r.ok ? 'ok' : 'warn', r.ok ? 'reachable' : 'http ' + r.status);
+    const r = await fetch(`${url}/healthz`, { credentials: 'omit' });
+    setPill('whisperxHealth', r.ok ? 'ok' : 'warn', r.ok ? 'reachable' : `http ${r.status}`);
   } catch (_) {
     setPill('whisperxHealth', 'err', 'unreachable');
   }

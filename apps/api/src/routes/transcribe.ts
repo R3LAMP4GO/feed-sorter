@@ -247,7 +247,7 @@ export function buildTranscribeRoutes(
 
     // 1) Cache lookup \u2014 hits skip both the provider AND the counter bump.
     const cached = await deps.getCached(hash);
-    if (cached && cached.result && typeof cached.result === 'object') {
+    if (cached?.result && typeof cached.result === 'object') {
       const value = cached.result as TranscribeCacheValue;
       return c.json({ ...value, postId, cached: true });
     }

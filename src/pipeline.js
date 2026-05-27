@@ -63,7 +63,7 @@ export const sanitizeSeg = (s) =>
   String(s || "").trim().replace(SAFE_SEG_RE, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "x";
 
 export const folderForPost = (post, { date = new Date(), root = "feed-sorter-ig" } = {}) => {
-  const author = sanitizeSeg(post && post.author || "unknown");
+  const author = sanitizeSeg(post?.author || "unknown");
   const sc = sanitizeSeg((post && (post.shortcode || post.id)) || "post");
   return `${root}/repurpose-${ymd(date)}/${author}-${sc}`;
 };
@@ -71,7 +71,7 @@ export const folderForPost = (post, { date = new Date(), root = "feed-sorter-ig"
 // Carry over OPTION-specified candidates → ranked picks.
 export const selectCandidates = (posts, { minScore = 2, count = 10 } = {}) => {
   const list = (Array.isArray(posts) ? posts : []).filter(
-    (p) => p && p.id && Number(p._score || 0) >= Number(minScore || 0),
+    (p) => p?.id && Number(p._score || 0) >= Number(minScore || 0),
   );
   // Score-desc; the caller usually pre-sorts but we don't trust it.
   list.sort((a, b) => (Number(b._score) || 0) - (Number(a._score) || 0));
@@ -81,7 +81,7 @@ export const selectCandidates = (posts, { minScore = 2, count = 10 } = {}) => {
 // Throws if the AbortSignal has fired. Used between every awaitable hop so
 // cancel takes effect within ≤1 step boundary.
 export const throwIfAborted = (signal) => {
-  if (signal && signal.aborted) {
+  if (signal?.aborted) {
     const e = new Error("aborted");
     e.name = "AbortError";
     throw e;
@@ -92,32 +92,32 @@ export const throwIfAborted = (signal) => {
 
 const fmtTags = (tags) =>
   (Array.isArray(tags) ? tags : [])
-    .map((t) => "#" + String(t || "").replace(/^#/, "").trim())
+    .map((t) => `#${String(t || "").replace(/^#/, "").trim()}`)
     .filter((s) => s.length > 1)
     .join(" ");
 
 export function renderTranscriptText(tx) {
   if (!tx || !tx.text) return "";
-  return String(tx.text).trim() + "\n";
+  return `${String(tx.text).trim()}\n`;
 }
 
 export function renderTranscriptJson(tx) {
-  return JSON.stringify(
+  return `${JSON.stringify(
     {
-      text: String((tx && tx.text) || ""),
-      language: String((tx && tx.language) || ""),
-      model: String((tx && tx.model) || ""),
-      segments: Array.isArray(tx && tx.segments) ? tx.segments : [],
+      text: String((tx?.text) || ""),
+      language: String((tx?.language) || ""),
+      model: String((tx?.model) || ""),
+      segments: Array.isArray(tx?.segments) ? tx.segments : [],
     },
     null,
     2,
-  ) + "\n";
+  )}\n`;
 }
 
 export function renderDiagnosisMarkdown(post, dx) {
   if (!dx) return "_no diagnosis_\n";
   const lines = [
-    `# Outlier diagnosis — @${(post && post.author) || "unknown"}`,
+    `# Outlier diagnosis — @${(post?.author) || "unknown"}`,
     "",
     `- **Hook strength:** ${dx.hookStrength}/10`,
     `- **Visual hook strength:** ${dx.visualHookStrength}/10`,
@@ -152,7 +152,7 @@ export function renderPlatformMarkdown(platform, row) {
     }
     lines.push("", `**CTA:** ${d.cta || ""}`);
   } else if (platform === "x") {
-    lines.push("# X (Twitter)", "", "## Single", "", "> " + String(d.single || "").replace(/\n/g, "\n> "), "", "## Thread", "");
+    lines.push("# X (Twitter)", "", "## Single", "", `> ${String(d.single || "").replace(/\n/g, "\n> ")}`, "", "## Thread", "");
     (Array.isArray(d.thread) ? d.thread : []).forEach((t, i) => lines.push(`${i + 1}. ${t}`));
   } else if (platform === "linkedin") {
     lines.push("# LinkedIn", "", String(d.post || ""));
@@ -177,32 +177,32 @@ export const PLATFORM_FILENAME = {
 
 const fmtNum = (n) => {
   const v = Number(n) || 0;
-  if (v >= 1_000_000) return (v / 1_000_000).toFixed(1) + "M";
-  if (v >= 1_000) return (v / 1_000).toFixed(1) + "K";
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(1)}K`;
   return String(v);
 };
 
 export function renderReadme(post, { folder, voice, diagnosis, bundle, transcript, platforms }) {
   const lines = [];
   const score = post && typeof post._score === "number" ? `${post._score.toFixed(2)}×` : "n/a";
-  lines.push(`# @${(post && post.author) || "unknown"} — ${score}`);
-  if (post && post.url) lines.push("", `<${post.url}>`);
+  lines.push(`# @${(post?.author) || "unknown"} — ${score}`);
+  if (post?.url) lines.push("", `<${post.url}>`);
   lines.push("");
   lines.push("## Stats");
   lines.push("");
-  lines.push(`- Score: **${score}** (basis: ${post && post._scoreBasis || "n/a"})`);
-  lines.push(`- Likes: ${fmtNum(post && post.likes)}`);
-  lines.push(`- Views: ${fmtNum(post && post.views)}`);
-  lines.push(`- Comments: ${fmtNum(post && post.comments)}`);
-  if (post && post.createTime) {
+  lines.push(`- Score: **${score}** (basis: ${post?._scoreBasis || "n/a"})`);
+  lines.push(`- Likes: ${fmtNum(post?.likes)}`);
+  lines.push(`- Views: ${fmtNum(post?.views)}`);
+  lines.push(`- Comments: ${fmtNum(post?.comments)}`);
+  if (post?.createTime) {
     const d = new Date(post.createTime > 1e12 ? post.createTime : post.createTime * 1000);
     lines.push(`- Posted: ${d.toISOString().slice(0, 10)}`);
   }
   lines.push("");
-  if (post && post.desc) {
+  if (post?.desc) {
     lines.push("## Original caption");
     lines.push("");
-    lines.push("> " + String(post.desc).replace(/\n/g, "\n> "));
+    lines.push(`> ${String(post.desc).replace(/\n/g, "\n> ")}`);
     lines.push("");
   }
   lines.push("## Artifacts");
@@ -211,14 +211,14 @@ export function renderReadme(post, { folder, voice, diagnosis, bundle, transcrip
   if (transcript) lines.push("- `transcript.txt` / `transcript.json` — Whisper transcript");
   if (diagnosis) lines.push("- `diagnosis.md` — multimodal Gemma diagnosis");
   for (const p of (platforms || PLATFORMS)) {
-    const ok = bundle && bundle.results && bundle.results[p];
+    const ok = bundle?.results?.[p];
     const fn = PLATFORM_FILENAME[p] || `${p}.md`;
     lines.push(`- \`${fn}\` — ${p}${ok ? "" : " _(failed)_"}`);
   }
   lines.push("");
   lines.push("## Pipeline");
   lines.push("");
-  if (voice && voice.username) {
+  if (voice?.username) {
     lines.push(`- Voice fingerprint: \`@${voice.username}\` (generated ${voice.generatedAt ? new Date(voice.generatedAt).toISOString().slice(0, 10) : "?"})`);
   } else {
     lines.push(`- Voice fingerprint: _none_ (set "Me" in Settings to repurpose in your own voice)`);
@@ -243,15 +243,14 @@ export async function checkHealth({ health, signal } = {}) {
     throw new Error("checkHealth: health() adapter required");
   }
   const r = await health({ signal });
-  const ollama = (r && r.ollama) || { ok: false };
-  const whisper = (r && r.whisper) || { ok: false };
+  const ollama = (r?.ollama) || { ok: false };
+  const whisper = (r?.whisper) || { ok: false };
   if (!ollama.ok || !whisper.ok) {
     const bad = [];
     if (!ollama.ok) bad.push(`Ollama (${ollama.err || "unreachable"})`);
     if (!whisper.ok) bad.push(`Whisper sidecar (${whisper.err || "unreachable"})`);
     throw new PipelineHealthError(
-      `Local AI services not reachable: ${bad.join(", ")}. ` +
-      `See README → "Local AI setup".`,
+      `Local AI services not reachable: ${bad.join(", ")}. See README → "Local AI setup".`,
       { ollama, whisper },
     );
   }
@@ -301,7 +300,7 @@ async function runStep({ post, step, fn, store, onEvent, signal }) {
   try {
     value = await fn();
   } catch (e) {
-    const err = String((e && e.message) || e);
+    const err = String((e?.message) || e);
     safeEvent(onEvent, { type: "step.fail", postId: post.id, step, err, durationMs: Date.now() - t0 });
     throw e;
   }
@@ -375,7 +374,7 @@ export async function runRepurposePipeline({
 
   // Concurrency = 1. Both Whisper and the multimodal model peg local CPU/GPU.
   for (let idx = 0; idx < picks.length; idx++) {
-    if (signal && signal.aborted) {
+    if (signal?.aborted) {
       safeEvent(onEvent, { type: "batch.aborted", at: idx, total: picks.length });
       break;
     }
@@ -414,7 +413,7 @@ export async function runRepurposePipeline({
       if (tx.skipped) skipped++;
 
       // Hydrate the post with the transcript so downstream steps see it.
-      if (tx.value && tx.value.text && !post.transcript) post.transcript = tx.value.text;
+      if (tx.value?.text && !post.transcript) post.transcript = tx.value.text;
 
       // 2c) Diagnose.
       const dx = await runStep({
@@ -444,8 +443,8 @@ export async function runRepurposePipeline({
           });
           // Write each platform's markdown; missing ones get a stub explaining failure.
           for (const platform of targetPlatforms) {
-            const row = b && b.results && b.results[platform];
-            const err = b && b.errors && b.errors[platform];
+            const row = b?.results?.[platform];
+            const err = b?.errors?.[platform];
             const md = row
               ? renderPlatformMarkdown(platform, row)
               : `# ${platform}\n\n_Generation failed: ${err || "no result"}_\n`;
@@ -482,8 +481,8 @@ export async function runRepurposePipeline({
       durations.push(dur);
       safeEvent(onEvent, { type: "post.ok", index: idx, total: picks.length, postId: post.id, durationMs: dur });
     } catch (e) {
-      const errMsg = String((e && e.message) || e);
-      const aborted = (e && e.name === "AbortError") || (signal && signal.aborted);
+      const errMsg = String((e?.message) || e);
+      const aborted = (e && e.name === "AbortError") || (signal?.aborted);
       item.errors._fatal = errMsg;
       item.durationMs = Date.now() - tPost;
       if (aborted) {
@@ -508,7 +507,7 @@ export async function runRepurposePipeline({
     items,
     durationMs: Date.now() - t0,
     averagePerPostMs,
-    aborted: !!(signal && signal.aborted),
+    aborted: !!(signal?.aborted),
   };
   safeEvent(onEvent, { type: "batch.end", ...result });
   return result;

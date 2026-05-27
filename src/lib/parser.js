@@ -18,7 +18,18 @@ export const looksLikeMedia = (o) => {
     "edge_liked_by" in o;
   const hasShape =
     "code" in o || "shortcode" in o || "media_type" in o || "carousel_media" in o;
-  return hasStat && hasShape;
+  const hasMediaPayload =
+    "taken_at" in o ||
+    "taken_at_timestamp" in o ||
+    "display_url" in o ||
+    "thumbnail_url" in o ||
+    "thumbnail_src" in o ||
+    "video_versions" in o ||
+    "video_url" in o ||
+    "image_versions2" in o ||
+    (Array.isArray(o.carousel_media) && o.carousel_media.length > 0) ||
+    /^Graph(Image|Video|Sidecar)$/.test(String(o.__typename || ""));
+  return hasShape && (hasStat || hasMediaPayload);
 };
 
 export const cover = (m) => {
@@ -82,7 +93,7 @@ export const surfaceFromUrlTag = (url, tag) => {
   if (tag === "ig-clips" || /\/clips\/user\//.test(url)) return "reels";
   if (tag === "ig-explore" || /\/discover\//.test(url)) return "explore";
   if (tag === "ig-feed" || /\/feed\/user\//.test(url)) return "profile";
-  if (tag === "ig-graphql" || /\/graphql\//.test(url)) return "graphql";
+  if (tag === "ig-graphql" || /\/(?:api\/graphql|graphql\/)/.test(url)) return "graphql";
   return "unknown";
 };
 

@@ -1,26 +1,36 @@
 // IIFE mirror of src/analysis/post-analysis.js for content scripts.
-// Mirrors `scoreFormats`, `FORMAT_LABELS`, and `FORMAT_SIGNALS` only — the
-// LLM-driven `analyzePost` path stays in the ESM module (it's only called via
-// the llm-bridge from contexts that have ESM available).
+// Mirrors cheap rule-based helpers. The LLM-driven `analyzePost` path stays in
+// the ESM module (it's only called via the llm-bridge from contexts that have
+// ESM available).
 //
 // Keep in lock-step with src/analysis/post-analysis.js. Tests for the ESM
 // version cover both: the runtime is a near-verbatim transliteration.
 //
 // Exposes globalThis.__fsPostAnalysis = { scoreFormats, FORMAT_LABELS,
-//                                          FORMAT_SIGNALS, topFormat }.
+//   FORMAT_SIGNALS, topFormat, CATEGORY_LABELS, classifyCategory,
+//   classifyForCsv, buildClassificationText }.
 
-(function (root) {
+((root) => {
   const FORMAT_LABELS = [
     "talking_head", "story", "skit", "educational", "listicle", "tutorial",
     "reaction", "pov", "hottake", "tip", "dayinlife", "beforeafter", "explainer",
   ];
 
   const transcriptText = (post) => {
-    const segs = Array.isArray(post && post.transcriptSegments) ? post.transcriptSegments : null;
-    if (segs && segs.length) {
-      return segs.map((s) => String((s && s.text) || "")).join(" ");
+    const segs = Array.isArray(post?.transcriptSegments) ? post.transcriptSegments : null;
+    if (segs?.length) {
+      return segs.map((s) => String((s?.text) || "")).join(" ");
     }
-    return String((post && post.transcript) || "");
+    return String((post?.transcript) || "");
+  };
+
+  const buildClassificationText = (post) => {
+    const title = String((post && (post.title || post.name)) || "").trim();
+    const desc = String((post?.desc) || "").trim();
+    const transcript = transcriptText(post).trim();
+    const authorCategory = String((post && (post.authorCategory || post.creatorCategory || post.categoryName)) || "").trim();
+    const authorBio = String((post && (post.authorBio || post.bio)) || "").trim();
+    return [title, desc, transcript, authorCategory, authorBio].filter(Boolean).join("\n\n");
   };
 
   const countMatches = (s, re) => {
@@ -39,7 +49,7 @@
   };
 
   function FORMAT_SIGNALS(post) {
-    const desc = String((post && post.desc) || "");
+    const desc = String((post?.desc) || "");
     const lower = desc.toLowerCase();
     const trimmed = desc.trim();
     const transcript = transcriptText(post).toLowerCase();
@@ -56,17 +66,17 @@
     const hasStoryHashtag = tags.has("storytime") || tags.has("story") || tags.has("mystory");
     const hasPovHashtag = tags.has("pov");
     const hasTutorialHashtag = tags.has("tutorial") || tags.has("howto");
-    const hasDuration = Number.isFinite(post && post.durationSec);
+    const hasDuration = Number.isFinite(post?.durationSec);
     const dur = hasDuration ? Number(post.durationSec) : null;
     const audioObj = post && typeof post.audio === "object" ? post.audio : null;
     const audioIsOriginal = audioObj
       ? audioObj.isOriginal === true
-      : !!(post && post.audioIsOriginal);
+      : !!(post?.audioIsOriginal);
     const audioUseCount = audioObj && Number.isFinite(audioObj.useCount) ? audioObj.useCount : 0;
     const audioIsLicensedMusic = audioObj ? audioObj.isOriginal === false : false;
     const audioIsTrending = audioObj
       ? (audioObj.isOriginal === false && audioUseCount >= 1000)
-      : !!(post && post.audioIsTrending);
+      : !!(post?.audioIsTrending);
     const isDuet = !!(post && (post.isDuet || post.isStitch || post.parentPostId));
     const transcriptWords = transcript ? transcript.split(/\s+/).filter(Boolean).length : 0;
     const transcriptFirstPerson = transcript ? countMatches(transcript, /\b(i|i['’]m|i['’]ve|me|my|we)\b/g) : 0;
@@ -108,7 +118,7 @@
   function scoreFormats(post) {
     const sig = FORMAT_SIGNALS(post);
     const lower = sig.lower;
-    const trimmed = String((post && post.desc) || "").trim();
+    const trimmed = String((post?.desc) || "").trim();
     const lowerTrimmed = trimmed.toLowerCase();
     const tx = sig.transcript;
     const out = {};
@@ -216,12 +226,179 @@
 
   function topFormat(post) {
     const scores = scoreFormats(post);
-    let best = "other", bestVal = 0;
+    let best = "other";
+    let bestVal = 0;
     for (const k of Object.keys(scores)) {
       if (scores[k] > bestVal) { best = k; bestVal = scores[k]; }
     }
     return bestVal > 0 ? best : "other";
   }
 
-  root.__fsPostAnalysis = { scoreFormats, FORMAT_SIGNALS, FORMAT_LABELS, topFormat };
+  const CATEGORY_LABELS = [
+    "business", "finance", "fitness", "beauty", "real-estate", "ai-tools",
+    "marketing", "food", "travel", "parenting", "education", "entertainment",
+    "other",
+  ];
+
+  const CATEGORY_RULES = Object.freeze({
+    business: [
+      /\b(startup|founder|entrepreneur|business|company|companies|ceo|operator|operations|sales|revenue|profit|pricing|offer|client|customers?|leadership|management|hiring|agency|consulting|b2b|saas|ecommerce|shopify)\b/g,
+      /#(startup|founder|entrepreneur|business|businesstips|smallbusiness|sales|saas|ecommerce)\b/g,
+    ],
+    finance: [
+      /\b(money|invest(?:ing|ment|or)?|stocks?|crypto|bitcoin|portfolio|dividend|etf|fund|trading|wealth|retirement|401k|ira|tax(?:es)?|budget|saving|debt|credit score|mortgage|interest rate|inflation|apr|cash flow|net worth)\b/g,
+      /#(finance|investing|money|stocks|crypto|wealth|personalfinance|financialfreedom)\b/g,
+    ],
+    fitness: [
+      /\b(fitness|workout|training|train|gym|lift(?:ing)?|strength|hypertroph|muscle|glutes?|abs|cardio|running|marathon|protein|macros?|calories|calorie deficit|cutting|bulking|meal prep|nutrition|diet|mobility|pilates|yoga|coach)\b/g,
+      /#(fitness|gym|workout|bodybuilding|nutrition|protein|macros|running|pilates|yoga|fitnesstips)\b/g,
+    ],
+    beauty: [
+      /\b(beauty|makeup|skincare|skin care|haircare|hair|nails?|lash(?:es)?|brows?|cosmetic|cosmetics|foundation|concealer|mascara|lipstick|serum|retinol|spf|sunscreen|acne|glow up|grwm|outfit|fashion|style)\b/g,
+      /#(beauty|makeup|skincare|haircare|nails|grwm|fashion|style|ootd)\b/g,
+    ],
+    "real-estate": [
+      /\b(real estate|realtor|property|properties|listing|listings|home buyer|homebuyer|seller|open house|mortgage|escrow|closing costs?|house hack|airbnb|rental|rentals?|landlord|tenant|zillow|housing market|commercial real estate|cre)\b/g,
+      /#(realestate|realtor|property|homebuyer|listingagent|investor|airbnb|rentalproperty)\b/g,
+    ],
+    "ai-tools": [
+      /\b(ai|a\.i\.|artificial intelligence|chatgpt|gpt-?4|claude|gemini|midjourney|runway|elevenlabs|prompt|prompts|prompting|automation|agent|agents|llm|ollama|machine learning|no-code ai|ai tool|ai tools)\b/g,
+      /#(ai|aitools|chatgpt|claude|gemini|midjourney|promptengineering|automation|llm)\b/g,
+    ],
+    marketing: [
+      /\b(marketing|content strategy|content creation|creator|brand|branding|copywriting|hook|hooks|funnel|landing page|email list|newsletter|seo|ads?|paid media|meta ads|google ads|ugc|influencer|viral|algorithm|growth|social media|tiktok shop|lead magnet)\b/g,
+      /#(marketing|contentmarketing|branding|copywriting|seo|socialmedia|growth|creator|viraltips)\b/g,
+    ],
+    food: [
+      /\b(recipe|cook(?:ing)?|bake|baking|meal|dish|dinner|lunch|breakfast|restaurant|chef|kitchen|ingredients?|sauce|pasta|tacos?|coffee|cocktail|protein bowl|air fryer|foodie)\b/g,
+      /#(food|recipe|cooking|baking|foodie|mealprep|dinner|restaurant|coffee)\b/g,
+    ],
+    travel: [
+      /\b(travel|trip|flight|hotel|airbnb|resort|vacation|itinerary|passport|visa|airport|destination|beach|city guide|things to do|solo travel|backpacking|cruise|tourist)\b/g,
+      /#(travel|traveltips|vacation|hotel|flight|itinerary|solotravel|bucketlist)\b/g,
+    ],
+    parenting: [
+      /\b(parent(?:ing)?|mom|dad|motherhood|fatherhood|toddler|baby|newborn|pregnancy|postpartum|kids?|children|school run|homeschool|gentle parenting|tantrum|daycare|nap time|family)\b/g,
+      /#(parenting|momlife|dadlife|motherhood|fatherhood|toddler|baby|family)\b/g,
+    ],
+    education: [
+      /\b(learn|lesson|study|student|teacher|school|college|university|course|classroom|homework|exam|quiz|tutorial|explained|how it works|science|history|math|language learning|books?|reading|research)\b/g,
+      /#(education|learn|study|student|teacher|school|science|history|books)\b/g,
+    ],
+    entertainment: [
+      /\b(comedy|funny|meme|skit|prank|pov|storytime|dance|music|song|movie|film|tv show|netflix|celebrity|reaction|reacting|gaming|gameplay|streamer|anime|trailer)\b/g,
+      /#(comedy|funny|meme|skit|pov|dance|music|movies|gaming|anime|entertainment)\b/g,
+    ],
+  });
+
+  const CATEGORY_TIEBREAK = CATEGORY_LABELS.filter((label) => label !== "other");
+
+  const normalizeCategoryText = (post) => {
+    const text = buildClassificationText(post);
+    const hashtags = Array.isArray(post?.hashtags) ? post.hashtags.map((h) => `#${String(h).replace(/^#/, "")}`).join(" ") : "";
+    const platformCategory = String((post && (post.category || post.topicCategory || post.authorCategory || post.creatorCategory)) || "");
+    return [text, hashtags, platformCategory].filter(Boolean).join("\n").toLowerCase();
+  };
+
+  const scoreCategoryText = (text) => {
+    const scores = {};
+    for (const label of CATEGORY_TIEBREAK) {
+      let total = 0;
+      for (const re of CATEGORY_RULES[label] || []) {
+        re.lastIndex = 0;
+        total += countMatches(text, re);
+      }
+      if (total > 0) {
+        scores[label] = clamp01(0.25 + Math.min(total, 7) * 0.1);
+      }
+    }
+    return scores;
+  };
+
+  function classifyCategory(post) {
+    const text = normalizeCategoryText(post);
+    const scores = scoreCategoryText(text);
+    let best = "other";
+    let confidence = 0;
+    for (const label of CATEGORY_TIEBREAK) {
+      const score = scores[label] || 0;
+      if (score > confidence) {
+        best = label;
+        confidence = score;
+      }
+    }
+    if (confidence <= 0) {
+      return { category: "other", confidence: 0, scores };
+    }
+    return { category: best, confidence: clamp01(confidence), scores };
+  }
+
+  const VISUAL_FORMATS = new Set(["talking-head", "info-card", "split-screen", "product", "b-roll"]);
+
+  const csvContentFormat = (post) => {
+    const scores = scoreFormats(post);
+    let best = "other";
+    let confidence = 0;
+    for (const label of Object.keys(scores)) {
+      if (scores[label] > confidence) {
+        best = label;
+        confidence = scores[label];
+      }
+    }
+    return { contentFormat: best, formatConfidence: clamp01(confidence), formatScores: scores };
+  };
+
+  const normalizeNicheLabel = (value) => String(value || "")
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/[^a-z0-9\s&/]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .slice(0, 4)
+    .join(" ");
+
+  function classifyForCsv(post, opts = {}) {
+    const categoryResult = classifyCategory(post);
+    const formatResult = csvContentFormat(post);
+    const visualFormat = typeof (post?.visualFormat) === "string" && VISUAL_FORMATS.has(post.visualFormat)
+      ? post.visualFormat
+      : "";
+    const contentFormat = formatResult.contentFormat;
+    const primaryFormat = visualFormat || contentFormat || "other";
+    const hasRuleCategory = categoryResult.category !== "other" && categoryResult.confidence > 0;
+    const hasRuleFormat = contentFormat !== "other" && formatResult.formatConfidence > 0;
+    const source = opts.source
+      || (visualFormat && (hasRuleCategory || hasRuleFormat) ? "mixed" : "rules");
+    const ai = post?.ai && typeof post.ai === "object" ? post.ai : null;
+    const niche = normalizeNicheLabel(
+      (post?.niche)
+        || (ai && (ai.niche || ai.nicheLabel))
+        || (hasRuleCategory ? categoryResult.category : "")
+    );
+    return {
+      category: categoryResult.category,
+      niche,
+      contentFormat,
+      visualFormat: visualFormat || (typeof (post?.visualFormat) === "string" ? post.visualFormat : ""),
+      format: primaryFormat,
+      categoryConfidence: categoryResult.confidence,
+      formatConfidence: visualFormat ? Math.max(0.75, formatResult.formatConfidence) : formatResult.formatConfidence,
+      classificationSource: source,
+      classificationAt: Number.isFinite(opts.now) ? Number(opts.now) : Date.now(),
+      categoryScores: categoryResult.scores,
+      formatScores: formatResult.formatScores,
+    };
+  }
+
+  root.__fsPostAnalysis = {
+    scoreFormats,
+    FORMAT_SIGNALS,
+    FORMAT_LABELS,
+    topFormat,
+    CATEGORY_LABELS,
+    classifyCategory,
+    classifyForCsv,
+    buildClassificationText,
+  };
 })(typeof globalThis !== "undefined" ? globalThis : self);

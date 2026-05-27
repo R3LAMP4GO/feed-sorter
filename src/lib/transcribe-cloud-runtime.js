@@ -6,7 +6,7 @@
 //   transcribeWithGroq, testGroqKey,
 // }.
 
-(function (root) {
+((root) => {
   const GROQ_BASE = "https://api.groq.com";
   const GROQ_MAX_BYTES = 25 * 1024 * 1024;
   const GROQ_DEFAULT_MODEL = "whisper-large-v3-turbo";
@@ -33,7 +33,7 @@
       if (!vr || !vr.ok) return null;
       buf = await vr.arrayBuffer();
     } catch { return null; }
-    const size = (buf && buf.byteLength) || 0;
+    const size = (buf?.byteLength) || 0;
     if (size > GROQ_MAX_BYTES) return { ok: false, err: "video too large", bytes: size };
 
     const blob = new Blob([buf], { type: "video/mp4" });
@@ -45,9 +45,9 @@
 
     let res;
     try {
-      res = await fetchImpl(GROQ_BASE + "/openai/v1/audio/transcriptions", {
+      res = await fetchImpl(`${GROQ_BASE}/openai/v1/audio/transcriptions`, {
         method: "POST",
-        headers: { Authorization: "Bearer " + apiKey },
+        headers: { Authorization: `Bearer ${apiKey}` },
         body: fd,
         signal,
       });
@@ -82,17 +82,17 @@
     if (!apiKey) return { ok: false, err: "no-key" };
     if (typeof fetchImpl !== "function") return { ok: false, err: "no-fetch" };
     try {
-      const res = await fetchImpl(GROQ_BASE + "/openai/v1/models", {
+      const res = await fetchImpl(`${GROQ_BASE}/openai/v1/models`, {
         method: "GET",
-        headers: { Authorization: "Bearer " + apiKey },
+        headers: { Authorization: `Bearer ${apiKey}` },
         signal,
       });
       if (!res || !res.ok) {
-        return { ok: false, status: (res && res.status) || 0, err: "HTTP " + (res && res.status) };
+        return { ok: false, status: (res?.status) || 0, err: `HTTP ${res?.status}` };
       }
       return { ok: true, status: res.status };
     } catch (e) {
-      return { ok: false, err: String((e && e.message) || e) };
+      return { ok: false, err: String((e?.message) || e) };
     }
   }
 
@@ -118,13 +118,13 @@
     } catch { return null; }
     if (!buf || !buf.byteLength) return null;
 
-    const url = HF_BASE + "/models/" + model;
+    const url = `${HF_BASE}/models/${model}`;
     const doPost = async () => {
       try {
         return await fetchImpl(url, {
           method: "POST",
           headers: {
-            Authorization: "Bearer " + apiKey,
+            Authorization: `Bearer ${apiKey}`,
             "Content-Type": "audio/mpeg",
           },
           body: buf,
@@ -138,7 +138,7 @@
       let eta = null;
       try {
         const j = await res.json();
-        const n = Number(j && j.estimated_time);
+        const n = Number(j?.estimated_time);
         if (Number.isFinite(n) && n >= 0) eta = Math.min(n, HF_MAX_LOADING_WAIT_S);
       } catch { /* ignore */ }
       if (eta == null) return null;
@@ -162,15 +162,15 @@
     try {
       const res = await fetchImpl(HF_WHOAMI_URL, {
         method: "GET",
-        headers: { Authorization: "Bearer " + apiKey },
+        headers: { Authorization: `Bearer ${apiKey}` },
         signal,
       });
       if (!res || !res.ok) {
-        return { ok: false, status: (res && res.status) || 0, err: "HTTP " + (res && res.status) };
+        return { ok: false, status: (res?.status) || 0, err: `HTTP ${res?.status}` };
       }
       return { ok: true, status: res.status };
     } catch (e) {
-      return { ok: false, err: String((e && e.message) || e) };
+      return { ok: false, err: String((e?.message) || e) };
     }
   }
 

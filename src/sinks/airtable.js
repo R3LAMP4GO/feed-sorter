@@ -60,7 +60,7 @@
     // GET with maxRecords=1 — cheapest auth probe.
     const r = await limiter.runWithBackoff(() =>
       api.post({
-        url: tableUrl(cfg) + "?maxRecords=1",
+        url: `${tableUrl(cfg)}?maxRecords=1`,
         method: "GET",
         headers: headers(cfg),
       }),
@@ -69,7 +69,7 @@
     let detail = r.status || r.err;
     try {
       const j = r.json || (r.text && JSON.parse(r.text));
-      if (j && j.error) detail = `${r.status} ${j.error.type || ""}: ${j.error.message || j.error}`;
+      if (j?.error) detail = `${r.status} ${j.error.type || ""}: ${j.error.message || j.error}`;
     } catch {}
     return { ok: false, msg: `failed: ${detail}`, status: r.status };
   };
@@ -97,7 +97,7 @@
         let detail = r.status || r.err;
         try {
           const j = r.json || (r.text && JSON.parse(r.text));
-          if (j && j.error) detail = `${r.status} ${j.error.type || ""}: ${j.error.message || j.error}`;
+          if (j?.error) detail = `${r.status} ${j.error.type || ""}: ${j.error.message || j.error}`;
         } catch {}
         errors.push(`[${table}] chunk ${i}: ${detail}`);
         if (onProgress) for (let j = 0; j < c.length; j++) onProgress(sent + j + 1, rowsLen, "fail");
@@ -121,7 +121,7 @@
     const unifiedApi = (typeof window !== "undefined" && window.__fsUnified) || null;
     let unifiedErrors = [];
     if (cfg.unifiedTable && unifiedApi) {
-      const extVer = (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || "";
+      const extVer = (chrome.runtime.getManifest?.().version) || "";
       const unifiedRows = rows
         .map((p) => {
           try { return unifiedApi.fromInstagramPost(p, { extensionVersion: extVer }); }

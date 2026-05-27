@@ -15,8 +15,7 @@ export function rateLimit(opts: { windowMs: number; max: number }): MiddlewareHa
   return async (c, next) => {
     const user = c.get('user');
     const key =
-      (user?.sub ? `u:${user.sub}` : `ip:${c.req.header('x-forwarded-for') ?? 'unknown'}`) +
-      `|${c.req.path}`;
+      `${user?.sub ? `u:${user.sub}` : `ip:${c.req.header('x-forwarded-for') ?? 'unknown'}`}|${c.req.path}`;
 
     const now = Date.now();
     let b = BUCKETS.get(key);

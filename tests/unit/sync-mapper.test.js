@@ -26,34 +26,70 @@ const SCOPE_FROM_SURFACE = {
 const PLATFORM_BY_PREFIX = { ig: 'instagram', tt: 'tiktok', yt: 'youtube' };
 const inferPlatform = (p) => {
   if (p && SYNC_PLATFORMS.has(p.platform)) return p.platform;
-  const m = String((p && p.id) || '').match(/^([a-z]+)_/);
+  const m = String((p?.id) || '').match(/^([a-z]+)_/);
   return m ? PLATFORM_BY_PREFIX[m[1]] || null : null;
+};
+const stringOrNull = (value) => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+};
+const objectFieldString = (obj, keys) => {
+  if (!obj || typeof obj !== 'object') return null;
+  for (const key of keys) {
+    const value = stringOrNull(obj[key]);
+    if (value) return value;
+  }
+  return null;
 };
 const extractHook = (ai) => {
   if (!ai) return null;
   const h = ai.hook;
-  if (typeof h === 'string') return h || null;
-  if (h && typeof h === 'object') {
-    if (typeof h.text === 'string' && h.text) return h.text;
-    if (typeof h.label === 'string' && h.label) return h.label;
-  }
-  return null;
+  if (typeof h === 'string') return stringOrNull(h);
+  return objectFieldString(h, ['text', 'hookText', 'label']);
+};
+const extractMiddle = (ai) => {
+  if (!ai) return null;
+  const middle = stringOrNull(ai.middle) || stringOrNull(ai.middleSummary);
+  if (middle) return middle;
+  return objectFieldString(ai.middle, ['summary', 'text', 'middleSummary', 'label']);
+};
+const extractCta = (ai) => {
+  if (!ai) return null;
+  const cta = ai.cta;
+  if (typeof cta === 'string') return stringOrNull(cta);
+  const fromObj = objectFieldString(cta, ['text', 'ctaText', 'label']);
+  return fromObj || stringOrNull(ai.ctaText);
+};
+const extractType = (value, keys) => {
+  if (typeof value === 'string') return stringOrNull(value);
+  return objectFieldString(value, keys);
+};
+const extractTopics = (ai) => {
+  if (!ai || !Array.isArray(ai.topics)) return undefined;
+  const topics = ai.topics.map((topic) => stringOrNull(topic)).filter(Boolean);
+  return topics.length ? topics : undefined;
+};
+const extractNiche = (ai) => {
+  if (!ai) return null;
+  return stringOrNull(ai.niche) || stringOrNull(ai.nicheLabel) || objectFieldString(ai.niche, ['label', 'text', 'nicheLabel']);
 };
 const extractTranscript = (p) => {
   const text = typeof p.transcript === 'string' ? p.transcript : '';
   const segments = Array.isArray(p.transcriptSegments) ? p.transcriptSegments : null;
-  if (!text && !(segments && segments.length)) return undefined;
+  if (!text && !(segments?.length)) return undefined;
   const source = typeof p.transcriptSource === 'string' && p.transcriptSource
     ? p.transcriptSource
     : undefined;
   const out = { text };
-  if (segments && segments.length) out.segments = segments;
+  if (segments?.length) out.segments = segments;
   if (source) out.source = source;
   return out;
 };
 const argmaxFormat = (scores) => {
   if (!scores || typeof scores !== 'object') return undefined;
-  let best, bestVal = 0;
+  let best;
+  let bestVal = 0;
   for (const k of Object.keys(scores)) {
     const v = Number(scores[k]) || 0;
     if (v > bestVal) { bestVal = v; best = k; }
@@ -70,11 +106,15 @@ const toSyncPost = (p, creatorNicheMap) => {
     ? new Date(p.createTime * (p.createTime > 1e12 ? 1 : 1000)).toISOString()
     : null;
   const usernameLower = p.author ? String(p.author).toLowerCase() : null;
+  const ai = p.ai && typeof p.ai === 'object' ? p.ai : null;
+  const aiNiche = extractNiche(ai);
   let niche;
-  if (typeof p.niche === 'string' && p.niche) niche = p.niche;
+  let nicheSource = null;
+  if (typeof p.niche === 'string' && p.niche) { niche = p.niche; nicheSource = 'post'; }
+  else if (aiNiche) { niche = aiNiche; nicheSource = 'ai'; }
   else if (usernameLower && creatorNicheMap && creatorNicheMap.get) {
     const fromCreator = creatorNicheMap.get(usernameLower);
-    if (typeof fromCreator === 'string' && fromCreator) niche = fromCreator;
+    if (typeof fromCreator === 'string' && fromCreator) { niche = fromCreator; nicheSource = 'creator'; }
   }
 
   let formatScores;
@@ -86,16 +126,21 @@ const toSyncPost = (p, creatorNicheMap) => {
   }
   if (!format && typeof p.format === 'string' && p.format) format = p.format;
 
-  const ai = p.ai && typeof p.ai === 'object' ? p.ai : null;
   const hook = extractHook(ai);
-  const cta = (ai && ai.cta) ? ai.cta : null;
-  const pacing = (ai && ai.pacing) ? ai.pacing : null;
+  const hookType = ai ? extractType(ai.hookType || ai.hook, ['hookType', 'type']) : null;
+  const middle = extractMiddle(ai);
+  const cta = extractCta(ai);
+  const ctaType = ai ? extractType(ai.ctaType || ai.cta, ['ctaType', 'type']) : null;
+  const topics = extractTopics(ai);
+  const pacing = (ai?.pacing) ? ai.pacing : null;
   const coverAnalysis = p.cover_ai || null;
   const diagnosis = p.diagnosis || null;
   const transcript = extractTranscript(p);
   const outlierScore = Number.isFinite(p._score) && p._score > 0 ? p._score : undefined;
   const velocity = Number.isFinite(p.velocity) ? p.velocity : undefined;
-  const nicheBasis = typeof p.nicheBasis === 'string' && p.nicheBasis ? p.nicheBasis : undefined;
+  let nicheBasis = typeof p.nicheBasis === 'string' && p.nicheBasis ? p.nicheBasis : undefined;
+  if (!nicheBasis && nicheSource === 'ai') nicheBasis = 'text';
+  if (!nicheBasis && nicheSource === 'creator') nicheBasis = 'author';
   const videoUrl = typeof p.videoUrl === 'string' && p.videoUrl ? p.videoUrl : undefined;
 
   return {
@@ -116,7 +161,12 @@ const toSyncPost = (p, creatorNicheMap) => {
     format,
     nicheBasis,
     hook: hook || undefined,
+    hookType: hookType || undefined,
+    middle: middle || undefined,
+    middleSummary: middle || undefined,
     cta: cta || undefined,
+    ctaType: ctaType || undefined,
+    topics,
     pacing: pacing || undefined,
     coverAnalysis: coverAnalysis || undefined,
     outlierScore,
@@ -138,7 +188,7 @@ describe('toSyncPost', () => {
     // Before the fix, parser.toPost did not set `platform`, and toSyncPost
     // returned null. The id is bare ('4001'); content.js prefixes it on
     // store. Simulate that:
-    const stored = { ...ig, id: 'ig_' + ig.id };
+    const stored = { ...ig, id: `ig_${ig.id}` };
     const out = toSyncPost(stored);
     expect(out).not.toBeNull();
     expect(out.platform).toBe('instagram');
@@ -232,6 +282,13 @@ describe('toSyncPost — creator niche lookup', () => {
     expect(out.niche).toBe('cinematic-vlog');
   });
 
+  it('uses AI niche when post and creator niche are absent', () => {
+    const out = toSyncPost({ id: 'tt_1', author: 'someone', ai: { niche: 'wellness routines' } }, new Map());
+    expect(out.niche).toBe('wellness routines');
+    expect(out.nicheBasis).toBe('text');
+    expect(out.creator.niche).toBe('wellness routines');
+  });
+
   it('leaves niche undefined when neither source has one', () => {
     const out = toSyncPost({ id: 'ig_1', author: 'someone' }, new Map());
     expect(out.niche).toBeUndefined();
@@ -271,7 +328,12 @@ describe('toSyncPost — Library-page enrichment fields', () => {
       nicheBasis: 'text',
       ai: {
         hook: 'Most people get protein wrong',
+        hookType: 'contrarian',
+        middle: 'Explains protein targets and timing mistakes.',
         cta: 'Save this for your next gym day',
+        ctaType: 'save',
+        topics: ['protein', 'muscle growth', 'meal prep'],
+        niche: 'fitness ai fallback',
         pacing: 'medium',
       },
       cover_ai: { hasFace: true, composition: 'centered', expression: 'neutral' },
@@ -305,7 +367,12 @@ describe('toSyncPost — Library-page enrichment fields', () => {
 
     // AI extraction fields — hook is the string variant.
     expect(out.hook).toBe('Most people get protein wrong');
+    expect(out.hookType).toBe('contrarian');
+    expect(out.middle).toBe('Explains protein targets and timing mistakes.');
+    expect(out.middleSummary).toBe('Explains protein targets and timing mistakes.');
     expect(out.cta).toBe('Save this for your next gym day');
+    expect(out.ctaType).toBe('save');
+    expect(out.topics).toEqual(['protein', 'muscle growth', 'meal prep']);
     expect(out.pacing).toBe('medium');
 
     // Cover + diagnosis pass through as-is.
@@ -348,7 +415,12 @@ describe('toSyncPost — Library-page enrichment fields', () => {
     expect(out.format).toBeUndefined();
     expect(out.nicheBasis).toBeUndefined();
     expect(out.hook).toBeUndefined();
+    expect(out.hookType).toBeUndefined();
+    expect(out.middle).toBeUndefined();
+    expect(out.middleSummary).toBeUndefined();
     expect(out.cta).toBeUndefined();
+    expect(out.ctaType).toBeUndefined();
+    expect(out.topics).toBeUndefined();
     expect(out.pacing).toBeUndefined();
     expect(out.coverAnalysis).toBeUndefined();
     expect(out.outlierScore).toBeUndefined();
@@ -427,7 +499,7 @@ describe('toSyncPost — Library-page enrichment fields', () => {
   it('skips outlierScore when _score is 0, negative, or non-finite (no positive baseline)', () => {
     expect(toSyncPost({ id: 'ig_1', desc: 'x', _score: 0 }).outlierScore).toBeUndefined();
     expect(toSyncPost({ id: 'ig_2', desc: 'x', _score: -1 }).outlierScore).toBeUndefined();
-    expect(toSyncPost({ id: 'ig_3', desc: 'x', _score: NaN }).outlierScore).toBeUndefined();
+    expect(toSyncPost({ id: 'ig_3', desc: 'x', _score: Number.NaN }).outlierScore).toBeUndefined();
     expect(toSyncPost({ id: 'ig_4', desc: 'x', _score: 2.5 }).outlierScore).toBe(2.5);
   });
 
@@ -439,5 +511,67 @@ describe('toSyncPost — Library-page enrichment fields', () => {
     });
     expect(out.formatScores).toBeUndefined();
     expect(out.format).toBe('talking_head');
+  });
+
+  it('maps TikTok hook, middle, CTA, niche, and format into sync fields', () => {
+    const out = toSyncPost({
+      id: 'tt_9001',
+      platform: 'tiktok',
+      nativeId: '9001',
+      author: 'TikTokCreator',
+      surface: 'foryou',
+      desc: 'POV: your morning routine finally sticks #wellness',
+      ai: {
+        hook: { text: 'Your morning routine finally sticks', hookType: 'direct-address' },
+        middle: { summary: 'Shows a repeatable three-step habit stack.' },
+        cta: { text: 'Follow for simple routines', ctaType: 'follow' },
+        topics: ['morning routine', '', 'habits'],
+        niche: 'wellness routines',
+      },
+    });
+
+    expect(out.platform).toBe('tiktok');
+    expect(out.scope).toBe('foryou');
+    expect(out.niche).toBe('wellness routines');
+    expect(out.nicheBasis).toBe('text');
+    expect(out.formatScores).toBeDefined();
+    expect(out.format).toBe('pov');
+    expect(out.hook).toBe('Your morning routine finally sticks');
+    expect(out.hookType).toBe('direct-address');
+    expect(out.middleSummary).toBe('Shows a repeatable three-step habit stack.');
+    expect(out.cta).toBe('Follow for simple routines');
+    expect(out.ctaType).toBe('follow');
+    expect(out.topics).toEqual(['morning routine', 'habits']);
+  });
+
+  it('maps YouTube hook, middle, CTA, niche, and format into sync fields', () => {
+    const out = toSyncPost({
+      id: 'yt_short123',
+      platform: 'youtube',
+      nativeId: 'short123',
+      author: 'ShortsCreator',
+      surface: 'shorts-feed',
+      desc: 'How to edit shorts faster — save this workflow',
+      transcript: 'How to edit shorts faster. First set your markers. Then export a reusable preset. Save this workflow.',
+      niche: 'shorts editing',
+      format: 'tutorial',
+      ai: {
+        hook: { hookText: 'How to edit shorts faster', type: 'question' },
+        middleSummary: 'Walks through markers, presets, and export shortcuts.',
+        ctaText: 'Save this workflow',
+        ctaType: 'save',
+      },
+    });
+
+    expect(out.platform).toBe('youtube');
+    expect(out.scope).toBe('shorts-feed');
+    expect(out.niche).toBe('shorts editing');
+    expect(out.format).toBe('tutorial');
+    expect(out.hook).toBe('How to edit shorts faster');
+    expect(out.hookType).toBe('question');
+    expect(out.middle).toBe('Walks through markers, presets, and export shortcuts.');
+    expect(out.cta).toBe('Save this workflow');
+    expect(out.ctaType).toBe('save');
+    expect(out.transcript.text).toContain('How to edit shorts faster');
   });
 });

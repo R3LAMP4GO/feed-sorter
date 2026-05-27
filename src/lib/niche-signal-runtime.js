@@ -106,14 +106,14 @@
     const tagCount = tagList.length;
     const tagBlob = tagList.join(" ");
     const debug = {
-      username: (creator && creator.username) || null,
+      username: (creator?.username) || null,
       bioPresent: !!bioText,
       bioWords,
       captionPosts: captionTexts.length,
       captionWords,
       tagCount,
-      pinned: !!(creator && creator.nichePinned),
-      pinnedLabel: creator && creator.nichePinned && creator.niche ? creator.niche : null,
+      pinned: !!(creator?.nichePinned),
+      pinnedLabel: creator?.nichePinned && creator.niche ? creator.niche : null,
     };
     if (bioWords >= o.minBioWords) return { source: "bio", text: bioText, wordCount: bioWords, debug };
     if (captionWords >= o.minCaptionWords) return { source: "captions", text: captionBlob, wordCount: captionWords, debug };

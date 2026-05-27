@@ -35,7 +35,7 @@ const openV9 = async () => {
         let migrated = 0;
         while (cursor) {
           const row = cursor.value;
-          if (row && row.id && !/^[a-z]{2,4}_/.test(String(row.id))) {
+          if (row?.id && !/^[a-z]{2,4}_/.test(String(row.id))) {
             const newId = `ig_${row.id}`;
             const next = { ...row, id: newId, platform: row.platform || "instagram" };
             await os.delete(cursor.key);
@@ -64,7 +64,7 @@ const openV10 = async () => {
         let migrated = 0;
         while (cursor) {
           const row = cursor.value;
-          if (row && row.id && !/^[a-z]{2,4}_/.test(String(row.id))) {
+          if (row?.id && !/^[a-z]{2,4}_/.test(String(row.id))) {
             const newId = `ig_${row.id}`;
             const next = { ...row, id: newId, platform: row.platform || "instagram" };
             await os.delete(cursor.key);
@@ -162,7 +162,7 @@ const openV11 = async () => {
         let cursor = await os.openCursor();
         while (cursor) {
           const row = cursor.value;
-          if (row && row.id && !/^[a-z]{2,4}_/.test(String(row.id))) {
+          if (row?.id && !/^[a-z]{2,4}_/.test(String(row.id))) {
             const newId = `ig_${row.id}`;
             const next = { ...row, id: newId, platform: row.platform || "instagram" };
             await os.delete(cursor.key);
@@ -418,6 +418,157 @@ describe("v9 → v10 niche/format field migration", () => {
     expect(comedy[0].nicheBasis).toBe("visual");
 
     expect(await getPostsByNiche("Nonexistent")).toEqual([]);
+    db.close();
+  });
+});
+
+
+const openV12 = async () => {
+  return openDB(DB_NAME, 12, {
+    async upgrade(db, oldVersion, _newVersion, transaction) {
+      if (oldVersion < 9 && db.objectStoreNames.contains("posts")) {
+        const os = transaction.objectStore("posts");
+        let cursor = await os.openCursor();
+        while (cursor) {
+          const row = cursor.value;
+          if (row?.id && !/^[a-z]{2,4}_/.test(String(row.id))) {
+            const newId = `ig_${row.id}`;
+            const next = { ...row, id: newId, platform: row.platform || "instagram" };
+            await os.delete(cursor.key);
+            await os.put(next);
+          }
+          cursor = await cursor.continue();
+        }
+      }
+      if (oldVersion < 10 && db.objectStoreNames.contains("posts")) {
+        const os = transaction.objectStore("posts");
+        let cursor = await os.openCursor();
+        while (cursor) {
+          const row = cursor.value;
+          if (row && (row.niche === undefined || row.nicheBasis === undefined || row.format === undefined)) {
+            await os.put({
+              ...row,
+              niche: row.niche === undefined ? null : row.niche,
+              nicheBasis: row.nicheBasis === undefined ? null : row.nicheBasis,
+              format: row.format === undefined ? null : row.format,
+            });
+          }
+          cursor = await cursor.continue();
+        }
+      }
+      if (oldVersion < 11 && db.objectStoreNames.contains("posts")) {
+        const ps = transaction.objectStore("posts");
+        let cursor = await ps.openCursor();
+        while (cursor) {
+          const row = cursor.value;
+          if (row && row.visualFormat === undefined) await ps.put({ ...row, visualFormat: null });
+          cursor = await cursor.continue();
+        }
+      }
+      if (oldVersion < 12 && db.objectStoreNames.contains("posts")) {
+        const os = transaction.objectStore("posts");
+        let cursor = await os.openCursor();
+        let touched = 0;
+        while (cursor) {
+          const row = cursor.value;
+          if (row && (
+            row.category === undefined || row.categoryConfidence === undefined ||
+            row.contentFormat === undefined || row.formatConfidence === undefined ||
+            row.classificationSource === undefined || row.classificationAt === undefined
+          )) {
+            await os.put({
+              ...row,
+              category: row.category === undefined ? null : row.category,
+              categoryConfidence: row.categoryConfidence === undefined ? null : row.categoryConfidence,
+              contentFormat: row.contentFormat === undefined ? null : row.contentFormat,
+              formatConfidence: row.formatConfidence === undefined ? null : row.formatConfidence,
+              classificationSource: row.classificationSource === undefined ? "" : row.classificationSource,
+              classificationAt: row.classificationAt === undefined ? null : row.classificationAt,
+            });
+            touched++;
+          }
+          cursor = await cursor.continue();
+        }
+        if (db.objectStoreNames.contains("meta")) {
+          const m = transaction.objectStore("meta");
+          await m.put({ id: "migrationVersion-v12-classification", value: 12, touchedPosts: touched, at: Date.now() });
+        }
+      }
+    },
+  });
+};
+
+describe("v11 → v12 CSV classification field migration", () => {
+  beforeEach(async () => {
+    await new Promise((resolve) => {
+      const req = indexedDB.deleteDatabase(DB_NAME);
+      req.onsuccess = req.onerror = req.onblocked = () => resolve();
+    });
+  });
+
+  it("stamps classification fields on existing posts", async () => {
+    await seedV8();
+    const db = await openV12();
+    try {
+      const all = await db.getAll("posts");
+      expect(all.length).toBe(3);
+      for (const row of all) {
+        expect(row.category).toBe(null);
+        expect(row.categoryConfidence).toBe(null);
+        expect(row.contentFormat).toBe(null);
+        expect(row.formatConfidence).toBe(null);
+        expect(row.classificationSource).toBe("");
+        expect(row.classificationAt).toBe(null);
+      }
+      const meta = await db.get("meta", "migrationVersion-v12-classification");
+      expect(meta.value).toBe(12);
+      expect(meta.touchedPosts).toBe(3);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("round-trips setPostClassification-equivalent patch logic", async () => {
+    await seedV8();
+    const db = await openV12();
+    const setPostClassification = async (id, classification) => {
+      const tx = db.transaction("posts", "readwrite");
+      const os = tx.objectStore("posts");
+      const prev = await os.get(String(id));
+      const merged = {
+        ...prev,
+        category: classification.category || null,
+        niche: classification.niche || prev.niche || null,
+        contentFormat: classification.contentFormat || null,
+        visualFormat: classification.visualFormat || prev.visualFormat || null,
+        format: classification.format || null,
+        categoryConfidence: Number.isFinite(Number(classification.categoryConfidence)) ? Number(classification.categoryConfidence) : null,
+        formatConfidence: Number.isFinite(Number(classification.formatConfidence)) ? Number(classification.formatConfidence) : null,
+        classificationSource: classification.classificationSource || "",
+        classificationAt: classification.classificationAt || Date.now(),
+      };
+      await os.put(merged);
+      await tx.done;
+      return merged;
+    };
+
+    const row = await setPostClassification("ig_4001", {
+      category: "business",
+      niche: "sales psychology",
+      contentFormat: "tutorial",
+      visualFormat: "talking-head",
+      format: "talking-head",
+      categoryConfidence: 0.65,
+      formatConfidence: 0.8,
+      classificationSource: "mixed",
+      classificationAt: 1700000000000,
+    });
+    expect(row.category).toBe("business");
+    expect(row.niche).toBe("sales psychology");
+    expect(row.contentFormat).toBe("tutorial");
+    expect(row.format).toBe("talking-head");
+    expect(row.visualFormat).toBe("talking-head");
+    expect(row.classificationAt).toBe(1700000000000);
     db.close();
   });
 });

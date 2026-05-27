@@ -158,8 +158,8 @@ export function pickNicheSignal(creator, posts, opts = {}) {
     captionPosts: captionTexts.length,
     captionWords,
     tagCount,
-    pinned: !!(creator && creator.nichePinned),
-    pinnedLabel: creator && creator.nichePinned && creator.niche ? creator.niche : null,
+    pinned: !!(creator?.nichePinned),
+    pinnedLabel: creator?.nichePinned && creator.niche ? creator.niche : null,
   };
 
   if (bioWords >= o.minBioWords) {

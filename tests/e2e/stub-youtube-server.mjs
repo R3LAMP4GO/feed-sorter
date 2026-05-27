@@ -42,7 +42,7 @@ const shortsPlayerHTML = (videoId) => `<!doctype html>
 <html><head><meta charset="utf-8"><title>Shorts • YouTube</title></head>
 <body>
 <h1>Shorts player</h1>
-<ytd-reel-video-renderer is-active>
+<ytd-reel-video-renderer is-active data-video-id="${videoId}">
   <div id="short-id">${videoId}</div>
   <div id="like-button">
     <button id="like-btn" aria-label="Like this video along with 344 other people">344</button>
@@ -61,6 +61,7 @@ let advanceCount = 0;
 window.__nextClicks = 0;
 const setVisibleShort = (id, likes, comments, views) => {
   window.history.replaceState({}, '', '/shorts/' + id);
+  document.querySelector('ytd-reel-video-renderer').setAttribute('data-video-id', id);
   document.getElementById('short-id').textContent = id;
   document.getElementById('like-btn').textContent = likes;
   document.getElementById('like-btn').setAttribute('aria-label', 'Like this video along with ' + likes + ' other people');
@@ -138,7 +139,7 @@ export const startStubServer = () =>
         const base = JSON.parse(loadFixture("youtube-next.json"));
         base.currentVideoEndpoint = { reelWatchEndpoint: { videoId } };
         const primary = base.contents?.twoColumnWatchNextResults?.results?.results?.contents?.[0]?.videoPrimaryInfoRenderer;
-        if (primary) delete primary.videoActions;
+        if (primary) primary.videoActions = undefined;
         res.writeHead(200, {
           "Content-Type": "application/json",
           "x-feed-sorter-tag": "yt-next",
@@ -158,7 +159,10 @@ export const startStubServer = () =>
       // /feed/shorts → snap player page without a video id in the URL.
       if (url.match(/^\/feed\/shorts\/?(?:\?.*)?$/)) {
         res.writeHead(200, { "Content-Type": "text/html" });
-        res.end(shortsPlayerHTML("feed001AB_"));
+        const html = url.includes("domonly=1")
+          ? shortsPlayerHTML("domonly001").replace(/setTimeout\(async \(\) => \{[\s\S]*?\}, 500\);/, "")
+          : shortsPlayerHTML("feed001AB_");
+        res.end(html);
         return;
       }
 
@@ -171,7 +175,7 @@ export const startStubServer = () =>
       }
 
       res.writeHead(404, { "Content-Type": "text/plain" });
-      res.end("not found: " + url);
+      res.end(`not found: ${url}`);
     });
 
     server.listen(0, "127.0.0.1", () => {

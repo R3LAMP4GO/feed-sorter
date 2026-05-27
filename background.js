@@ -22,6 +22,8 @@ const ALARM_NAME = "fs-rescrape-tick";
 const AUDIO_ALARM = "fs-audio-recompute";
 const WEEKLY_ALARM = "fs-weekly-digest";
 const CLUSTER_ALARM = "fs-cluster-niches";
+const FS_PROD_API_BASE = "https://api-production-5667.up.railway.app";
+const FS_PROD_APP_URL = "https://web-production-4e825.up.railway.app";
 const TICK_MIN = 10; // 10-min granularity (max 1 profile / 10 min).
 const AUDIO_TICK_MIN = 60; // hourly trending-audio recompute.
 const WEEKLY_TICK_MIN = 7 * 24 * 60; // weekly digest cadence.
@@ -59,6 +61,44 @@ const CREATOR_STORE = "creators";
 const POST_STORE = "posts";
 const AUDIO_STORE = "audio";
 const SIGNAL_STORE = "signals";
+
+const stripTrailingSlash = (value) => String(value || "").trim().replace(/\/+$/, "");
+const normalizeApiBaseUrl = (value) => {
+  const raw = stripTrailingSlash(value);
+  if (!raw) return FS_PROD_API_BASE;
+  try {
+    const url = new URL(raw);
+    if (url.hostname === "api.feedsorter.app") return FS_PROD_API_BASE;
+  } catch (_) {}
+  return raw;
+};
+const normalizeAppUrl = (value) => {
+  const raw = stripTrailingSlash(value);
+  if (!raw) return FS_PROD_APP_URL;
+  try {
+    const url = new URL(raw);
+    if (url.hostname === "app.feedsorter.app" || url.hostname === "feedsorter.app") return FS_PROD_APP_URL;
+  } catch (_) {}
+  return raw;
+};
+const migrateManagedBackendUrls = async () => {
+  try {
+    const cfg = await chrome.storage.local.get(["fs.api.baseUrl", "fs.app.url"]);
+    const updates = {};
+    if (cfg["fs.api.baseUrl"] && normalizeApiBaseUrl(cfg["fs.api.baseUrl"]) !== cfg["fs.api.baseUrl"]) {
+      updates["fs.api.baseUrl"] = normalizeApiBaseUrl(cfg["fs.api.baseUrl"]);
+    }
+    if (cfg["fs.app.url"] && normalizeAppUrl(cfg["fs.app.url"]) !== cfg["fs.app.url"]) {
+      updates["fs.app.url"] = normalizeAppUrl(cfg["fs.app.url"]);
+    }
+    if (Object.keys(updates).length) {
+      await chrome.storage.local.set(updates);
+      log("managed.urls.migrate", updates);
+    }
+  } catch (e) {
+    log("managed.urls.migrate.fail", { err: String(e?.message || e) });
+  }
+};
 
 const openDb = () =>
   new Promise((resolve, reject) => {
@@ -119,12 +159,12 @@ const refreshTierFromApi = async () => {
   const cfg = await chrome.storage.local.get(["fs.api.baseUrl", "fs.api.token"]);
   const token = cfg["fs.api.token"] || "";
   if (!token) return;
-  const baseUrl = cfg["fs.api.baseUrl"] || "https://api.feedsorter.app";
-  const res = await fetch(baseUrl + "/v1/me", {
+  const baseUrl = normalizeApiBaseUrl(cfg["fs.api.baseUrl"]);
+  const res = await fetch(`${baseUrl}/v1/me`, {
     method: "GET",
     headers: {
       "content-type": "application/json",
-      authorization: "Bearer " + token,
+      authorization: `Bearer ${token}`,
     },
     credentials: "include",
   });
@@ -206,7 +246,7 @@ const waitForReady = (tabId, timeoutMs = 30000) =>
     const tick = async () => {
       try {
         const r = await chrome.tabs.sendMessage(tabId, { type: "fs-bg", cmd: "ping" });
-        if (r && r.ok) return resolve(true);
+        if (r?.ok) return resolve(true);
       } catch {}
       if (Date.now() - t0 > timeoutMs) return resolve(false);
       setTimeout(tick, 750);
@@ -328,7 +368,7 @@ const ensureAlarm = async () => {
 const getWebhookConfig = async () => {
   try {
     const r = await chrome.storage.local.get(WH_KEY);
-    const cfg = r && r[WH_KEY];
+    const cfg = r?.[WH_KEY];
     return {
       generic: String(cfg?.generic || ""),
       slack: String(cfg?.slack || ""),
@@ -376,7 +416,7 @@ const doSinkPost = async ({ url, method = "POST", headers = {}, body = null }) =
     const text = await r.text().catch(() => "");
     let json = null;
     try { json = text ? JSON.parse(text) : null; } catch {}
-    const retryAfter = r.headers && r.headers.get ? r.headers.get("retry-after") : null;
+    const retryAfter = r.headers?.get ? r.headers.get("retry-after") : null;
     return { ok: r.ok, status: r.status, text, json, retryAfter };
   } catch (e) {
     return { ok: false, status: 0, err: String(e?.message || e) };
@@ -549,22 +589,56 @@ const SCOPE_FROM_SURFACE = {
 const PLATFORM_BY_PREFIX = { ig: "instagram", tt: "tiktok", yt: "youtube" };
 const inferPlatform = (p) => {
   if (p && SYNC_PLATFORMS.has(p.platform)) return p.platform;
-  const m = String(p && p.id || "").match(/^([a-z]+)_/);
+  const m = String(p?.id || "").match(/^([a-z]+)_/);
   return m ? PLATFORM_BY_PREFIX[m[1]] || null : null;
 };
-// Pull the AI-extracted hook off the row, tolerating both the legacy shape
-// (a plain string written by content.js's analyzePost) and the richer object
-// shape `{ text, label }` that the server / future pipeline writers use. The
-// website Library page only cares about the human-readable hook text.
+// Pull structured extraction fields off the row, tolerating both the legacy
+// shape (plain strings written by content.js's analyzePost) and richer object
+// shapes that backend / future pipeline writers use.
+const stringOrNull = (value) => {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+};
+const objectFieldString = (obj, keys) => {
+  if (!obj || typeof obj !== "object") return null;
+  for (const key of keys) {
+    const value = stringOrNull(obj[key]);
+    if (value) return value;
+  }
+  return null;
+};
 const extractHook = (ai) => {
   if (!ai) return null;
   const h = ai.hook;
-  if (typeof h === "string") return h || null;
-  if (h && typeof h === "object") {
-    if (typeof h.text === "string" && h.text) return h.text;
-    if (typeof h.label === "string" && h.label) return h.label;
-  }
-  return null;
+  if (typeof h === "string") return stringOrNull(h);
+  return objectFieldString(h, ["text", "hookText", "label"]);
+};
+const extractMiddle = (ai) => {
+  if (!ai) return null;
+  const middle = stringOrNull(ai.middle) || stringOrNull(ai.middleSummary);
+  if (middle) return middle;
+  return objectFieldString(ai.middle, ["summary", "text", "middleSummary", "label"]);
+};
+const extractCta = (ai) => {
+  if (!ai) return null;
+  const cta = ai.cta;
+  if (typeof cta === "string") return stringOrNull(cta);
+  const fromObj = objectFieldString(cta, ["text", "ctaText", "label"]);
+  return fromObj || stringOrNull(ai.ctaText);
+};
+const extractType = (value, keys) => {
+  if (typeof value === "string") return stringOrNull(value);
+  return objectFieldString(value, keys);
+};
+const extractTopics = (ai) => {
+  if (!ai || !Array.isArray(ai.topics)) return undefined;
+  const topics = ai.topics.map((topic) => stringOrNull(topic)).filter(Boolean);
+  return topics.length ? topics : undefined;
+};
+const extractNiche = (ai) => {
+  if (!ai) return null;
+  return stringOrNull(ai.niche) || stringOrNull(ai.nicheLabel) || objectFieldString(ai.niche, ["label", "text", "nicheLabel"]);
 };
 
 // Build the optional `transcript` sub-object from the flat row fields written
@@ -576,12 +650,12 @@ const extractHook = (ai) => {
 const extractTranscript = (p) => {
   const text = typeof p.transcript === "string" ? p.transcript : "";
   const segments = Array.isArray(p.transcriptSegments) ? p.transcriptSegments : null;
-  if (!text && !(segments && segments.length)) return undefined;
+  if (!text && !(segments?.length)) return undefined;
   const source = typeof p.transcriptSource === "string" && p.transcriptSource
     ? p.transcriptSource
     : undefined;
   const out = { text };
-  if (segments && segments.length) out.segments = segments;
+  if (segments?.length) out.segments = segments;
   if (source) out.source = source;
   return out;
 };
@@ -592,7 +666,8 @@ const extractTranscript = (p) => {
 // "other".
 const argmaxFormat = (scores) => {
   if (!scores || typeof scores !== "object") return undefined;
-  let best, bestVal = 0;
+  let best;
+  let bestVal = 0;
   for (const k of Object.keys(scores)) {
     const v = Number(scores[k]) || 0;
     if (v > bestVal) { bestVal = v; best = k; }
@@ -615,13 +690,18 @@ const toSyncPost = (p, creatorNicheMap) => {
     ? new Date(p.createTime * (p.createTime > 1e12 ? 1 : 1000)).toISOString()
     : null;
   const usernameLower = p.author ? String(p.author).toLowerCase() : null;
+  const ai = p.ai && typeof p.ai === "object" ? p.ai : null;
+  const aiNiche = extractNiche(ai);
   // Niche resolution order: post.niche (set by post-level cluster pipeline) →
-  // creatorNicheMap (set by creator-level clusterNiches) → undefined.
+  // ai.niche / ai.nicheLabel (set by per-post analysis) → creatorNicheMap
+  // (set by creator-level clusterNiches) → undefined.
   let niche;
-  if (typeof p.niche === "string" && p.niche) niche = p.niche;
+  let nicheSource = null;
+  if (typeof p.niche === "string" && p.niche) { niche = p.niche; nicheSource = "post"; }
+  else if (aiNiche) { niche = aiNiche; nicheSource = "ai"; }
   else if (usernameLower && creatorNicheMap && creatorNicheMap.get) {
     const fromCreator = creatorNicheMap.get(usernameLower);
-    if (typeof fromCreator === "string" && fromCreator) niche = fromCreator;
+    if (typeof fromCreator === "string" && fromCreator) { niche = fromCreator; nicheSource = "creator"; }
   }
 
   // Format classification: multi-label confidence map + argmax. The runtime
@@ -646,16 +726,21 @@ const toSyncPost = (p, creatorNicheMap) => {
   // post-level cluster pipeline / setPostFormat wrote.
   if (!format && typeof p.format === "string" && p.format) format = p.format;
 
-  const ai = p.ai && typeof p.ai === "object" ? p.ai : null;
   const hook = extractHook(ai);
-  const cta = (ai && ai.cta) ? ai.cta : null;
-  const pacing = (ai && ai.pacing) ? ai.pacing : null;
+  const hookType = ai ? extractType(ai.hookType || ai.hook, ["hookType", "type"]) : null;
+  const middle = extractMiddle(ai);
+  const cta = extractCta(ai);
+  const ctaType = ai ? extractType(ai.ctaType || ai.cta, ["ctaType", "type"]) : null;
+  const topics = extractTopics(ai);
+  const pacing = (ai?.pacing) ? ai.pacing : null;
   const coverAnalysis = p.cover_ai || null;
   const diagnosis = p.diagnosis || null;
   const transcript = extractTranscript(p);
   const outlierScore = Number.isFinite(p._score) && p._score > 0 ? p._score : undefined;
   const velocity = Number.isFinite(p.velocity) ? p.velocity : undefined;
-  const nicheBasis = typeof p.nicheBasis === "string" && p.nicheBasis ? p.nicheBasis : undefined;
+  let nicheBasis = typeof p.nicheBasis === "string" && p.nicheBasis ? p.nicheBasis : undefined;
+  if (!nicheBasis && nicheSource === "ai") nicheBasis = "text";
+  if (!nicheBasis && nicheSource === "creator") nicheBasis = "author";
   const videoUrl = typeof p.videoUrl === "string" && p.videoUrl ? p.videoUrl : undefined;
 
   return {
@@ -663,7 +748,7 @@ const toSyncPost = (p, creatorNicheMap) => {
     platform,
     nativeId,
     creator: usernameLower ? {
-      platform: p.platform,
+      platform,
       username: usernameLower,
       displayName: p.authorFullName || undefined,
       followerCount: Number.isFinite(p.authorFollowers) ? p.authorFollowers : undefined,
@@ -686,7 +771,12 @@ const toSyncPost = (p, creatorNicheMap) => {
     format,
     nicheBasis,
     hook: hook || undefined,
+    hookType: hookType || undefined,
+    middle: middle || undefined,
+    middleSummary: middle || undefined,
     cta: cta || undefined,
+    ctaType: ctaType || undefined,
+    topics,
     pacing: pacing || undefined,
     coverAnalysis: coverAnalysis || undefined,
     outlierScore,
@@ -762,7 +852,7 @@ const recomputeAudio = async () => {
   }
   const posts = await getAllFromStore(POST_STORE);
   const postById = new Map();
-  for (const p of posts) if (p && p.id) postById.set(String(p.id), p);
+  for (const p of posts) if (p?.id) postById.set(String(p.id), p);
 
   // Per-author baseline (median likes among posts with likes>0).
   const byAuthor = new Map();
@@ -785,7 +875,8 @@ const recomputeAudio = async () => {
     if (!a || !a.id) continue;
     const ids = Array.isArray(a.posts) ? a.posts : [];
     const scores = [];
-    let last7 = 0, prev7 = 0;
+    let last7 = 0;
+    let prev7 = 0;
     for (const id of ids) {
       const p = postById.get(String(id));
       if (!p) continue;
@@ -914,8 +1005,8 @@ const clusterNiches = async (opts = {}) => {
     //       capture in content.js. The SW cannot read (b) directly — that's
     //       a different IDB origin. So callers may pass posts via
     //       opts.posts, mirroring the api.sync-posts handler's pattern.
-    const passedPosts = Array.isArray(opts && opts.posts) ? opts.posts : null;
-    const posts = passedPosts && passedPosts.length
+    const passedPosts = Array.isArray(opts?.posts) ? opts.posts : null;
+    const posts = passedPosts?.length
       ? passedPosts
       : await getAllFromStore(POST_STORE);
     const byAuthor = new Map();
@@ -940,11 +1031,11 @@ const clusterNiches = async (opts = {}) => {
     // IDB; the SW often can't if content.js has migrated the schema past
     // the SW's openDb version). Falls back to the SW's getAllCreators for
     // alarm-triggered runs.
-    const passedCreators = Array.isArray(opts && opts.creators) ? opts.creators : null;
-    let creators = (passedCreators && passedCreators.length)
+    const passedCreators = Array.isArray(opts?.creators) ? opts.creators : null;
+    let creators = (passedCreators?.length)
       ? passedCreators.slice()
       : await getAllCreators();
-    if (passedCreators && passedCreators.length) {
+    if (passedCreators?.length) {
       log("cluster.creators.from-content", { count: creators.length });
     }
     const tracked = new Set(creators.map((c) => String(c.username || "").toLowerCase()).filter(Boolean));
@@ -1093,7 +1184,7 @@ const clusterNiches = async (opts = {}) => {
 const maybeClusterTick = async () => {
   try {
     const r = await chrome.storage.local.get(CLUSTER_META_KEY);
-    const meta = r && r[CLUSTER_META_KEY];
+    const meta = r?.[CLUSTER_META_KEY];
     const all = await getAllCreators();
     const now = Date.now();
     const lastRunAt = meta?.lastRunAt || 0;
@@ -1121,11 +1212,13 @@ globalThis.__fsClusterRun = clusterNiches;
 
 chrome.runtime.onInstalled.addListener(async () => {
   log("installed");
+  await migrateManagedBackendUrls();
   await ensureAlarm();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   log("startup");
+  await migrateManagedBackendUrls();
   await ensureAlarm();
 });
 
@@ -1186,7 +1279,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true, vectors });
       } catch (e) {
         log("embed.fail", { err: String(e) });
-        sendResponse({ ok: false, err: String(e && e.message || e) });
+        sendResponse({ ok: false, err: String(e?.message || e) });
       }
     })();
     return true;
@@ -1355,18 +1448,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const post = (msg && typeof msg.post === "object" && msg.post) ? msg.post : null;
       const groqKey = msg && typeof msg.groqApiKey === "string" ? msg.groqApiKey.trim() : "";
       const hfKey = msg && typeof msg.hfApiKey === "string" ? msg.hfApiKey.trim() : "";
-      const hfFallbackOnRateLimit = !!(msg && msg.hfFallbackOnRateLimit);
+      const hfFallbackOnRateLimit = !!(msg?.hfFallbackOnRateLimit);
       const language = msg.language ? String(msg.language) : "";
       const mode = (msg && typeof msg.transcribeMode === "string" && msg.transcribeMode) || "auto";
       const tStart = Date.now();
 
-      // ---- Tier 1: free transcript (TikTok WebVTT / IG alt-text). ----
+      // ---- Tier 1: free transcript (TikTok/YouTube captions / IG alt-text). ----
       async function tryFreeTranscript(p) {
         if (!Transcripts || !p) return null;
-        const free = await Transcripts.fetchFreeTranscript(p, { fetchImpl: fetch });
+        const free = await Transcripts.fetchFreeTranscript(p, { fetchImpl: fetch, preferredLang: language || "en" });
         if (!free || !free.text) return null;
         const source = free.kind === "alt" ? "ig-alt" : (free.source || "free");
-        return { text: free.text, source };
+        return { text: free.text, source, language: free.language || "" };
       }
 
       // ---- Tier 2: Groq Whisper-Large-v3-Turbo (BYOK). ----
@@ -1377,7 +1470,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           fetchImpl: (u, o) => fetch(u, o),
           language: language || "en",
         });
-        if (g && g.ok && g.text) return { text: g.text, source: "groq-whisper" };
+        if (g?.ok && g.text) return { text: g.text, source: "groq-whisper" };
         if (g && g.ok === false) {
           log("transcribe.groq.fail", { id: msg.id, err: g.err, retryAfter: g.retryAfter || null });
         }
@@ -1398,7 +1491,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           groqRateLimited: lastTier === "groq",
           fallbackOnRateLimit,
         });
-        if (h && h.ok && h.text) return { text: h.text, source: "hf-whisper" };
+        if (h?.ok && h.text) return { text: h.text, source: "hf-whisper" };
         return null;
       }
 
@@ -1441,7 +1534,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sidecar: wrap("sidecar", (p) => tryWhisperSidecar(p)),
       };
 
-      const cascade = TranscribeCascade && TranscribeCascade.runCascade;
+      const cascade = TranscribeCascade?.runCascade;
       if (!cascade) {
         log("transcribe.cascade.missing", { id: msg.id });
         return sendResponse({ ok: false, err: "cascade-runtime-missing", ms: Date.now() - tStart });
@@ -1469,7 +1562,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             ok: true,
             text: result.text,
             segments: [],
-            language: language || "",
+            language: result.language || language || "",
             model,
             source: result.source,
             ...(isAlt ? { isAltText: true } : {}),
@@ -1493,7 +1586,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const r = await llmChat(p);
         sendResponse({ ok: true, body: r });
       } catch (e) {
-        const status = e && e.status;
+        const status = e?.status;
         log("llm.call.fail", { err: String(e?.message || e), status, ms: Date.now() - t0, kind: p.kind });
         sendResponse({ ok: false, status: status || 0, err: String(e?.message || e) });
       }
@@ -1507,7 +1600,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         const r = await llmHealthCheck(msg.payload || {});
         sendResponse({ ok: true, body: r });
       } catch (e) {
-        sendResponse({ ok: false, status: e && e.status || 0, err: String(e?.message || e), kind: e && e.kind });
+        sendResponse({ ok: false, status: e?.status || 0, err: String(e?.message || e), kind: e?.kind });
       }
     })();
     return true;
@@ -1542,7 +1635,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.cmd === "api.config") {
     (async () => {
       const cfg = await chrome.storage.local.get(["fs.api.baseUrl", "fs.api.token"]);
-      sendResponse({ ok: true, baseUrl: cfg["fs.api.baseUrl"] || "https://api.feedsorter.app", token: cfg["fs.api.token"] || null });
+      sendResponse({ ok: true, baseUrl: normalizeApiBaseUrl(cfg["fs.api.baseUrl"]), token: cfg["fs.api.token"] || null });
     })();
     return true;
   }
@@ -1555,7 +1648,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       // next on-demand request. On disconnect, reset to 'free' so locked
       // features show the upgrade chip immediately.
       if (msg.token) {
-        refreshTierFromApi().catch((e) => log("api.tier.refresh.fail", { err: String(e && e.message || e) }));
+        refreshTierFromApi().catch((e) => log("api.tier.refresh.fail", { err: String(e?.message || e) }));
       } else {
         try { await chrome.storage.local.set({ "fs.api.tier": "free" }); } catch (_) {}
       }
@@ -1564,7 +1657,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg.cmd === "api.set-base" && typeof msg.baseUrl === "string") {
     (async () => {
-      await chrome.storage.local.set({ "fs.api.baseUrl": msg.baseUrl });
+      await chrome.storage.local.set({ "fs.api.baseUrl": normalizeApiBaseUrl(msg.baseUrl) });
       sendResponse({ ok: true });
     })();
     return true;
@@ -1573,10 +1666,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     (async () => {
       try {
         const cfg = await chrome.storage.local.get(["fs.api.baseUrl", "fs.api.token"]);
-        const baseUrl = cfg["fs.api.baseUrl"] || "https://api.feedsorter.app";
+        const baseUrl = normalizeApiBaseUrl(cfg["fs.api.baseUrl"]);
         const token = cfg["fs.api.token"] || "";
         const headers = Object.assign({ "content-type": "application/json" }, msg.headers || {});
-        if (token) headers.authorization = "Bearer " + token;
+        if (token) headers.authorization = `Bearer ${token}`;
         const res = await fetch(baseUrl + msg.path, {
           method: msg.method || "GET",
           headers,
@@ -1594,7 +1687,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
         sendResponse({ ok: res.ok, status: res.status, body: json, raw: json ? null : text });
       } catch (e) {
-        sendResponse({ ok: false, err: String(e && e.message || e) });
+        sendResponse({ ok: false, err: String(e?.message || e) });
       }
     })();
     return true;
@@ -1603,18 +1696,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     (async () => {
       try {
         const cfg = await chrome.storage.local.get(["fs.api.baseUrl", "fs.api.token"]);
-        const baseUrl = cfg["fs.api.baseUrl"] || "https://api.feedsorter.app";
+        const baseUrl = normalizeApiBaseUrl(cfg["fs.api.baseUrl"]);
         const token = cfg["fs.api.token"] || "";
         // Fetch the video from the platform CDN with active session credentials,
         // then forward as multipart to our backend.
         const vidRes = await fetch(msg.videoUrl, { credentials: "include" });
-        if (!vidRes.ok) throw new Error("video fetch " + vidRes.status);
+        if (!vidRes.ok) throw new Error(`video fetch ${vidRes.status}`);
         const blob = await vidRes.blob();
         const fd = new FormData();
-        fd.append("file", blob, msg.postId + ".mp4");
+        fd.append("file", blob, `${msg.postId}.mp4`);
         const headers = {};
-        if (token) headers.authorization = "Bearer " + token;
-        const res = await fetch(baseUrl + "/v1/posts/" + encodeURIComponent(msg.postId) + "/transcribe", {
+        if (token) headers.authorization = `Bearer ${token}`;
+        const res = await fetch(`${baseUrl}/v1/posts/${encodeURIComponent(msg.postId)}/transcribe`, {
           method: "POST",
           headers,
           body: fd,
@@ -1627,7 +1720,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: res.ok, status: res.status, body: json });
       } catch (e) {
         log("api.transcribe.fail", { err: String(e), postId: msg.postId });
-        sendResponse({ ok: false, err: String(e && e.message || e) });
+        sendResponse({ ok: false, err: String(e?.message || e) });
       }
     })();
     return true;
@@ -1637,7 +1730,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const t0 = Date.now();
       try {
         const cfg = await chrome.storage.local.get(["fs.api.baseUrl", "fs.api.token"]);
-        const baseUrl = cfg["fs.api.baseUrl"] || "https://api.feedsorter.app";
+        const baseUrl = normalizeApiBaseUrl(cfg["fs.api.baseUrl"]);
         const token = cfg["fs.api.token"] || "";
         if (!token) {
           console.warn("[fs-bg] sync: not-signed-in");
@@ -1658,14 +1751,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
         const creatorNicheMap = await buildCreatorNicheMap();
         // Track which niche source fired for each synced post: the post's
-        // own label (set by the post-level cluster pipeline), the creator's
-        // (from clusterNiches), or neither. Surfaces in the sync log so we
-        // can see whether the bio-first cascade is actually paying off.
-        const nicheSrc = { post: 0, creator: 0, none: 0 };
+        // own label (post-level cluster pipeline), AI per-post analysis,
+        // creator clustering, or neither. Surfaces in the sync log so we can
+        // see whether each cascade is actually paying off.
+        const nicheSrc = { post: 0, ai: 0, creator: 0, none: 0 };
         const mapped = all.map((p) => {
           const out = toSyncPost(p, creatorNicheMap);
           if (!out) return null;
+          const aiNiche = p.ai && typeof p.ai === "object" ? extractNiche(p.ai) : null;
           if (out.niche && typeof p.niche === "string" && p.niche === out.niche) nicheSrc.post++;
+          else if (out.niche && aiNiche === out.niche) nicheSrc.ai++;
           else if (out.niche) nicheSrc.creator++;
           else nicheSrc.none++;
           return out;
@@ -1683,16 +1778,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
         const BATCH = 100;
         const sample = mapped[0];
-        let inserted = 0, dropped = 0, batches = 0, lastErr = null, lastStatus = 0;
+        let inserted = 0;
+        let dropped = 0;
+        let batches = 0;
+        let lastErr = null;
+        let lastStatus = 0;
         for (let i = 0; i < mapped.length; i += BATCH) {
           const slice = mapped.slice(i, i + BATCH);
-          const url = baseUrl + "/v1/posts/sync";
-          console.log("[fs-bg] sync: POST batch", { batch: batches + 1, count: slice.length, url, firstId: slice[0] && slice[0].id });
+          const url = `${baseUrl}/v1/posts/sync`;
+          console.log("[fs-bg] sync: POST batch", { batch: batches + 1, count: slice.length, url, firstId: slice[0]?.id });
           const res = await fetch(url, {
             method: "POST",
             headers: {
               "content-type": "application/json",
-              authorization: "Bearer " + token,
+              authorization: `Bearer ${token}`,
             },
             body: JSON.stringify({ posts: slice }),
             credentials: "include",
@@ -1703,12 +1802,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           let json = null;
           try { json = text ? JSON.parse(text) : null; } catch (_) {}
           if (!res.ok) {
-            lastErr = (json && json.error) || ("http " + res.status);
+            lastErr = (json?.error) || (`http ${res.status}`);
             console.error("[fs-bg] sync: batch failed", { status: res.status, body: json || text });
             break;
           }
-          inserted += (json && json.inserted) || 0;
-          dropped += (json && json.dropped) || 0;
+          inserted += (json?.inserted) || 0;
+          dropped += (json?.dropped) || 0;
           console.log("[fs-bg] sync: batch ok", json);
         }
         const ms = Date.now() - t0;
@@ -1718,7 +1817,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       } catch (e) {
         console.error("[fs-bg] sync: threw", e);
         log("api.sync.fail", { err: String(e) });
-        sendResponse({ ok: false, err: String(e && e.message || e) });
+        sendResponse({ ok: false, err: String(e?.message || e) });
       }
     })();
     return true;
@@ -1727,11 +1826,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     (async () => {
       try {
         const cfg = await chrome.storage.local.get(["fs.api.baseUrl", "fs.api.token"]);
-        const baseUrl = cfg["fs.api.baseUrl"] || "https://api.feedsorter.app";
+        const baseUrl = normalizeApiBaseUrl(cfg["fs.api.baseUrl"]);
         const token = cfg["fs.api.token"] || "";
         const headers = { "content-type": "application/json" };
-        if (token) headers.authorization = "Bearer " + token;
-        const res = await fetch(baseUrl + "/v1/posts/" + encodeURIComponent(msg.postId) + "/transcribe", {
+        if (token) headers.authorization = `Bearer ${token}`;
+        const res = await fetch(`${baseUrl}/v1/posts/${encodeURIComponent(msg.postId)}/transcribe`, {
           method: "POST",
           headers,
           body: JSON.stringify({
@@ -1748,7 +1847,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         try { json = text ? JSON.parse(text) : null; } catch (_) {}
         sendResponse({ ok: res.ok, status: res.status, body: json });
       } catch (e) {
-        sendResponse({ ok: false, err: String(e && e.message || e) });
+        sendResponse({ ok: false, err: String(e?.message || e) });
       }
     })();
     return true;
@@ -1772,7 +1871,7 @@ const LLM_FAST_KINDS = new Set(["hook", "topic", "hookType", "per-post-analysis"
 const llmIsFastKind = (k) => LLM_FAST_KINDS.has(String(k || ""));
 const llmPickProvider = (p) => {
   if (p && (p.provider === "groq" || p.provider === "ollama")) return p.provider;
-  if (p && p.apiKey && String(p.apiKey).trim()) return "groq";
+  if (p?.apiKey && String(p.apiKey).trim()) return "groq";
   return "ollama";
 };
 const LLM_CACHE_KEY = "fs.llm.cache";
@@ -1785,9 +1884,9 @@ const LLM_QUEUE = [];
 
 const llmCanonicalize = (v) => {
   if (v === null || typeof v !== "object") return JSON.stringify(v);
-  if (Array.isArray(v)) return "[" + v.map(llmCanonicalize).join(",") + "]";
+  if (Array.isArray(v)) return `[${v.map(llmCanonicalize).join(",")}]`;
   const keys = Object.keys(v).sort();
-  return "{" + keys.map((k) => JSON.stringify(k) + ":" + llmCanonicalize(v[k])).join(",") + "}";
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${llmCanonicalize(v[k])}`).join(",")}}`;
 };
 const llmPromptHash = (payload) => {
   const s = llmCanonicalize(payload);
@@ -1800,7 +1899,7 @@ const llmPromptHash = (payload) => {
 const llmLoadSettings = async () => {
   try {
     const r = await chrome.storage.local.get("fs:ai");
-    const cfg = r && r["fs:ai"];
+    const cfg = r?.["fs:ai"];
     if (cfg && Number(cfg.concurrency) > 0) {
       LLM_CONCURRENCY = Math.max(1, Math.min(16, Number(cfg.concurrency)));
     }
@@ -1893,7 +1992,7 @@ async function llmChatOllama(payload) {
 
   const release = await llmAcquireSlot();
   const t0 = Date.now();
-  log("llm.call.start", { model, kind, postId, hasSchema: !!schema, hasImages: !!(images && images.length), inflight: LLM_INFLIGHT });
+  log("llm.call.start", { model, kind, postId, hasSchema: !!schema, hasImages: !!(images?.length), inflight: LLM_INFLIGHT });
 
   const ctrl = new AbortController();
   const timer = timeoutMs > 0
@@ -1901,7 +2000,7 @@ async function llmChatOllama(payload) {
     : null;
 
   try {
-    const url = String(endpoint).replace(/\/+$/, "") + "/api/chat";
+    const url = `${String(endpoint).replace(/\/+$/, "")}/api/chat`;
     const body = { model, messages: llmAttachImages(messages, images), stream: true };
     if (schema) body.format = schema;
     if (options && typeof options === "object") body.options = options;
@@ -1933,7 +2032,7 @@ async function llmChatOllama(payload) {
     let json = null;
     if (schema) {
       try { json = JSON.parse(text); }
-      catch (e) {
+      catch (_e) {
         const m = text.match(/```(?:json)?\s*([\s\S]*?)```/);
         if (m) { try { json = JSON.parse(m[1]); } catch { /* */ } }
         if (!json) {
@@ -2038,15 +2137,15 @@ async function llmChatGroq(payload) {
       throw err;
     }
     const raw = await resp.json();
-    const choice = Array.isArray(raw && raw.choices) ? raw.choices[0] : null;
-    const text = (choice && choice.message && typeof choice.message.content === "string") ? choice.message.content : "";
-    const tokensIn = (raw && raw.usage && Number(raw.usage.prompt_tokens)) || 0;
-    const tokensOut = (raw && raw.usage && Number(raw.usage.completion_tokens)) || 0;
+    const choice = Array.isArray(raw?.choices) ? raw.choices[0] : null;
+    const text = (choice?.message && typeof choice.message.content === "string") ? choice.message.content : "";
+    const tokensIn = (raw?.usage && Number(raw.usage.prompt_tokens)) || 0;
+    const tokensOut = (raw?.usage && Number(raw.usage.completion_tokens)) || 0;
     const modelEcho = (raw && typeof raw.model === "string") ? raw.model : useModel;
     let json = null;
     if (schema) {
       try { json = JSON.parse(text); }
-      catch (e) {
+      catch (_e) {
         const m = text.match(/```(?:json)?\s*([\s\S]*?)```/);
         if (m) { try { json = JSON.parse(m[1]); } catch { /* */ } }
         if (!json) {
@@ -2097,7 +2196,7 @@ async function llmHealthCheckOllama(endpoint) {
       throw err;
     }
     const raw = await r.json();
-    const models = Array.isArray(raw && raw.models)
+    const models = Array.isArray(raw?.models)
       ? raw.models.map((m) => (typeof m === "string" ? m : m.name)).filter(Boolean)
       : [];
     log("llm.health.ok", { provider: "ollama", endpoint: base, models: models.length, ms: Date.now() - t0 });
@@ -2108,7 +2207,7 @@ async function llmHealthCheckOllama(endpoint) {
 }
 
 async function llmHealthCheckGroq(opts) {
-  const key = String((opts && opts.apiKey) || "").trim();
+  const key = String((opts?.apiKey) || "").trim();
   if (!key) {
     const err = new Error("healthCheck: groq apiKey required");
     err.kind = "config";
@@ -2130,7 +2229,7 @@ async function llmHealthCheckGroq(opts) {
       throw err;
     }
     const raw = await r.json();
-    const models = Array.isArray(raw && raw.data)
+    const models = Array.isArray(raw?.data)
       ? raw.data.map((m) => (m && typeof m.id === "string" ? m.id : null)).filter(Boolean)
       : [];
     log("llm.health.ok", { provider: "groq", models: models.length, ms: Date.now() - t0 });

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Feed Sorter (Instagram + TikTok)",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Sort an Instagram or TikTok profile / explore feed by likes, views, comments, or outlier score.",
   "permissions": ["storage", "declarativeNetRequest", "activeTab", "tabs", "alarms", "notifications", "downloads", "offscreen"],
   "host_permissions": [
@@ -13,6 +13,8 @@
     "https://m.youtube.com/*",
     "https://*.googlevideo.com/*",
     "https://api.feedsorter.app/*",
+    "https://api-production-5667.up.railway.app/*",
+    "https://web-production-4e825.up.railway.app/*",
     "https://*.up.railway.app/*",
     "https://*/*",
     "http://localhost/*",
@@ -67,6 +69,9 @@
       "matches": [
         "http://localhost:3000/*",
         "http://127.0.0.1:3000/*",
+        "http://localhost:3002/*",
+        "http://127.0.0.1:3002/*",
+        "https://web-production-4e825.up.railway.app/*",
         "https://app.feedsorter.app/*"
       ],
       "js": ["src/lib/web-bridge-runtime.js"],

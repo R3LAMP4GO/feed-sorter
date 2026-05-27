@@ -23,7 +23,7 @@
   if (window.__fsStore) return;
 
   const DB_NAME = "feed-sorter";
-  const DB_VERSION = 11;
+  const DB_VERSION = 12;
   const STORE = "posts";
   const META_STORE = "meta";
   const CREATOR_STORE = "creators";
@@ -125,7 +125,7 @@
           let migrated = 0;
           while (cursor) {
             const row = cursor.value;
-            if (row && row.id && !/^[a-z]{2,4}_/.test(String(row.id))) {
+            if (row?.id && !/^[a-z]{2,4}_/.test(String(row.id))) {
               const newId = `ig_${row.id}`;
               const next = { ...row, id: newId, platform: row.platform || "instagram" };
               await os.delete(cursor.key);
@@ -240,6 +240,37 @@
             }
           }
         }
+        if (oldVersion < 12 && db.objectStoreNames.contains(STORE)) {
+          // CSV classification fields. These are deterministic labels used by
+          // exports and filters, separate from heavier LLM niche clustering.
+          const os = transaction.objectStore(STORE);
+          let cursor = await os.openCursor();
+          let touched = 0;
+          while (cursor) {
+            const row = cursor.value;
+            if (row && (
+              row.category === undefined || row.categoryConfidence === undefined ||
+              row.contentFormat === undefined || row.formatConfidence === undefined ||
+              row.classificationSource === undefined || row.classificationAt === undefined
+            )) {
+              await os.put({
+                ...row,
+                category: row.category === undefined ? null : row.category,
+                categoryConfidence: row.categoryConfidence === undefined ? null : row.categoryConfidence,
+                contentFormat: row.contentFormat === undefined ? null : row.contentFormat,
+                formatConfidence: row.formatConfidence === undefined ? null : row.formatConfidence,
+                classificationSource: row.classificationSource === undefined ? "" : row.classificationSource,
+                classificationAt: row.classificationAt === undefined ? null : row.classificationAt,
+              });
+              touched++;
+            }
+            cursor = await cursor.continue();
+          }
+          if (db.objectStoreNames.contains(META_STORE)) {
+            const m = transaction.objectStore(META_STORE);
+            await m.put({ id: "migrationVersion-v12-classification", value: 12, touchedPosts: touched, at: Date.now() });
+          }
+        }
       },
     });
     return dbPromise;
@@ -302,7 +333,7 @@
       videoUrl: next.videoUrl || prev.videoUrl,
       // Preserve transcript across re-ingests (ingest never carries it).
       transcript: next.transcript || prev.transcript || "",
-      transcriptSegments: (next.transcriptSegments && next.transcriptSegments.length)
+      transcriptSegments: (next.transcriptSegments?.length)
         ? next.transcriptSegments
         : (prev.transcriptSegments || null),
       transcriptLang: next.transcriptLang || prev.transcriptLang || "",
@@ -518,6 +549,40 @@
     return merged;
   };
 
+  // Patch all CSV classification fields at once. The classifier is intentionally
+  // outside the store; this setter only normalizes persisted field types.
+  const setPostClassification = async (id, classification) => {
+    if (!id || !classification || typeof classification !== "object") return null;
+    const db = await openDb();
+    const tx = db.transaction(STORE, "readwrite");
+    const os = tx.objectStore(STORE);
+    const prev = await os.get(String(id));
+    if (!prev) { await tx.done; return null; }
+    const strOrNull = (v) => (typeof v === "string" && v ? v : null);
+    const numOrNull = (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const source = typeof classification.classificationSource === "string"
+      ? classification.classificationSource
+      : "";
+    const merged = {
+      ...prev,
+      category: strOrNull(classification.category),
+      niche: strOrNull(classification.niche) || prev.niche || null,
+      contentFormat: strOrNull(classification.contentFormat),
+      visualFormat: strOrNull(classification.visualFormat) || prev.visualFormat || null,
+      format: strOrNull(classification.format),
+      categoryConfidence: numOrNull(classification.categoryConfidence),
+      formatConfidence: numOrNull(classification.formatConfidence),
+      classificationSource: source,
+      classificationAt: numOrNull(classification.classificationAt) || Date.now(),
+    };
+    await os.put(merged);
+    await tx.done;
+    return merged;
+  };
+
   // Return all posts whose `niche` field equals the given label. No index;
   // niche is a low-cardinality categorical so a getAll + filter is fine.
   const getPostsByNiche = async (niche) => {
@@ -638,8 +703,8 @@
     const auto = !!patch._autoNiche;
     const userSet = !!patch._userNiche;
     const cleanPatch = { ...patch };
-    delete cleanPatch._autoNiche;
-    delete cleanPatch._userNiche;
+    cleanPatch._autoNiche = undefined;
+    cleanPatch._userNiche = undefined;
     const merged = {
       ...(prev || emptyCreator(u)),
       ...cleanPatch,
@@ -927,7 +992,7 @@
       key: pipelineKey(postId, step),
       postId: String(postId),
       step: String(step),
-      at: (payload && payload.at) || Date.now(),
+      at: (payload?.at) || Date.now(),
       payload: payload || null,
     };
     const db = await openDb();
@@ -968,6 +1033,7 @@
     setPostNiche,
     setPostFormat,
     setPostVisualFormat,
+    setPostClassification,
     getPostsByNiche,
     getMeta,
     setMeta,

@@ -41,8 +41,8 @@
 // NOTE: this file is loaded as a classic <script> in both the content
 // script context and the dashboard page. It must NOT use ES module
 // syntax — it registers itself on globalThis.__fsUnified instead.
-(function (root) {
-  const mod = (function () {
+((root) => {
+  const mod = (() => {
   const SCHEMA_VERSION = 1;
 
   const PLATFORMS = Object.freeze({

@@ -3,18 +3,18 @@
 //
 // Keep this file in lock-step with `api-client.js`.
 
-(function () {
-  const DEFAULT_BASE = 'https://api.feedsorter.app';
+(() => {
+  const DEFAULT_BASE = 'https://api-production-5667.up.railway.app';
 
   function createApiClient(opts) {
-    const baseUrl = (opts && opts.baseUrl) || DEFAULT_BASE;
-    const fetchImpl = (opts && opts.fetchImpl) || fetch;
-    const getToken = opts && opts.getToken;
+    const baseUrl = (opts?.baseUrl) || DEFAULT_BASE;
+    const fetchImpl = (opts?.fetchImpl) || fetch;
+    const getToken = opts?.getToken;
 
     async function authHeader() {
       if (!getToken) return {};
       const tok = await getToken();
-      return tok ? { authorization: 'Bearer ' + tok } : {};
+      return tok ? { authorization: `Bearer ${tok}` } : {};
     }
 
     async function request(path, options) {
@@ -40,7 +40,7 @@
         json = text ? JSON.parse(text) : null;
       } catch (_) {}
       if (!res.ok) {
-        const err = new Error('API ' + res.status + ' ' + path + ': ' + ((json && json.error) || text));
+        const err = new Error(`API ${res.status} ${path}: ${(json?.error) || text}`);
         err.status = res.status;
         err.body = json;
         throw err;
@@ -64,13 +64,13 @@
       transcribeFile(postId, file) {
         const fd = new FormData();
         fd.append('file', file);
-        return request('/v1/posts/' + encodeURIComponent(postId) + '/transcribe', {
+        return request(`/v1/posts/${encodeURIComponent(postId)}/transcribe`, {
           method: 'POST',
           body: fd,
         });
       },
       transcribeText(postId, payload) {
-        return request('/v1/posts/' + encodeURIComponent(postId) + '/transcribe', {
+        return request(`/v1/posts/${encodeURIComponent(postId)}/transcribe`, {
           method: 'POST',
           body: Object.assign({ source: 'youtube-captions' }, payload),
         });

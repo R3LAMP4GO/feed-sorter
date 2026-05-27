@@ -59,7 +59,9 @@ describe("cluster.js", () => {
     const COM = ["joke", "laugh", "skit", "improv", "sketch", "parody"];
     const fakeEmbed = async (texts) => texts.map((t) => {
       const lo = t.toLowerCase();
-      let f = 0, n = 0, c = 0;
+      let f = 0;
+      let n = 0;
+      let c = 0;
       for (const w of FIT) if (lo.includes(w)) f++;
       for (const w of FIN) if (lo.includes(w)) n++;
       for (const w of COM) if (lo.includes(w)) c++;

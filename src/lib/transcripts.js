@@ -1,7 +1,8 @@
 // Free-transcript extraction. Pure ESM. All adapters injected.
 //
-// Two cheap (no-Whisper) sources of caption-ish text:
+// Three cheap (no-Whisper) sources of caption-ish text:
 //   - TikTok serves WebVTT or JSON3 subtitle URLs alongside posts.
+//   - YouTube player responses expose captionTracks[] baseUrl timed text.
 //   - Instagram image posts ship an `accessibility_caption` ("alt text"),
 //     which is a description of the image, not a transcript — callers
 //     should label the row accordingly (kind: "alt", source: "ig-alt").
@@ -98,37 +99,71 @@ export function extractAltText(post) {
   return { text, kind: "alt" };
 }
 
+const pickCaptionTrack = (tracks, preferredLang = "en") => {
+  if (!Array.isArray(tracks) || !tracks.length) return null;
+  const pref = (lang) => (track) => String(track?.languageCode || "").toLowerCase().startsWith(String(lang || "").toLowerCase());
+  const nonAsr = tracks.filter((track) => String(track?.kind || "") !== "asr");
+  return nonAsr.find(pref(preferredLang)) || tracks.find(pref(preferredLang)) || nonAsr[0] || tracks[0];
+};
+
+const appendJson3Format = (url) => {
+  const raw = String(url || "");
+  if (!raw || /(?:[?&])fmt=/i.test(raw)) return raw;
+  return `${raw + (raw.includes("?") ? "&" : "?")}fmt=json3`;
+};
+
+const fetchCaptionBody = async (url, fetchImpl, signal) => {
+  if (!url || typeof fetchImpl !== "function") return "";
+  try {
+    const res = await fetchImpl(url, { signal, credentials: "include" });
+    if (!res || !res.ok) return "";
+    return await res.text();
+  } catch {
+    return "";
+  }
+};
+
+const parseCaptionBody = (body, formatHint = "") => {
+  const src = String(body || "").trim();
+  if (!src) return "";
+  const fmt = String(formatHint || "").toLowerCase();
+  if (fmt === "json3" || fmt === "json" || src.startsWith("{")) {
+    const parsed = parseJSON3(src);
+    if (parsed) return parsed;
+  }
+  return parseWebVTT(src);
+};
+
 /**
- * Cheap-transcript cascade. No network unless captionUrl is set.
+ * Cheap-transcript cascade. No network unless a caption URL / track is set.
  *
  *   1. post.captionUrl present (TikTok) → fetch + parse → subtitle.
- *   2. post.altText present  (IG image) → return descriptor.
- *   3. otherwise              → null    (caller falls back to Whisper).
+ *   2. post.captionTracks present (YouTube) → fetch best track → subtitle.
+ *   3. post.altText present  (IG image) → return descriptor.
+ *   4. otherwise              → null    (caller falls back to Whisper).
  */
 export async function fetchFreeTranscript(post, opts = {}) {
-  const { fetchImpl, signal } = opts;
+  const { fetchImpl, signal, preferredLang = "en" } = opts;
   if (!post || typeof post !== "object") return null;
 
   if (typeof post.captionUrl === "string" && post.captionUrl) {
-    if (typeof fetchImpl !== "function") return null;
-    let body = "";
-    try {
-      const res = await fetchImpl(post.captionUrl, { signal });
-      if (!res || !res.ok) return null;
-      body = await res.text();
-    } catch {
-      return null;
-    }
-    const fmt = (post.captionFormat || "").toLowerCase();
-    let text = "";
-    if (fmt === "json3" || fmt === "json") {
-      text = parseJSON3(body);
-    } else {
-      // Default to WebVTT (TikTok's common format).
-      text = parseWebVTT(body);
-    }
+    const body = await fetchCaptionBody(post.captionUrl, fetchImpl, signal);
+    const text = parseCaptionBody(body, post.captionFormat || "");
     if (!text) return null;
     return { text, kind: "subtitle", source: "tiktok-vtt" };
+  }
+
+  const track = pickCaptionTrack(post.captionTracks, preferredLang);
+  if (track?.baseUrl) {
+    const body = await fetchCaptionBody(appendJson3Format(track.baseUrl), fetchImpl, signal);
+    const text = parseCaptionBody(body, "json3");
+    if (!text) return null;
+    return {
+      text,
+      kind: "subtitle",
+      source: "youtube-captions",
+      language: track.languageCode || "",
+    };
   }
 
   if (typeof post.altText === "string" && post.altText) {

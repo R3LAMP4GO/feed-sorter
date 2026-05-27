@@ -56,7 +56,7 @@ export function scoreRelevance(post, userPrefs = {}) {
   const w = prefs.weights;
 
   // ---- 1. format match ----
-  const fScores = (post && post.formatScores) || {};
+  const fScores = (post?.formatScores) || {};
   let formatNum = 0;
   let formatDen = 0;
   for (const [label, conf] of Object.entries(fScores)) {
@@ -72,7 +72,7 @@ export function scoreRelevance(post, userPrefs = {}) {
     // No niche preference set — neutral 0.5 so it neither helps nor hurts.
     niche = 0.5;
   } else {
-    const postNiche = String((post && post.niche) || "").toLowerCase().trim();
+    const postNiche = String((post?.niche) || "").toLowerCase().trim();
     if (!postNiche) {
       // Post has no niche label — penalize slightly under strictness.
       niche = 0.5 - 0.5 * prefs.nicheStrictness;
@@ -88,13 +88,13 @@ export function scoreRelevance(post, userPrefs = {}) {
   niche = clamp01(niche);
 
   // ---- 3. outlier strength ----
-  const outlierRaw = Number((post && post.outlier) || 0);
+  const outlierRaw = Number((post?.outlier) || 0);
   const outlier = saturateOutlier(outlierRaw);
 
   // ---- 4. velocity ----
   // post.velocity is computed by src/store.js read path; expect a number where
   // > 0 means accelerating. Saturate for the same reason as outlier.
-  const velRaw = Number((post && post.velocity) || 0);
+  const velRaw = Number((post?.velocity) || 0);
   const velocity = velRaw > 0 ? clamp01(1 - Math.exp(-velRaw / 2)) : 0;
 
   // ---- mix ----
@@ -107,8 +107,8 @@ export function scoreRelevance(post, userPrefs = {}) {
 
   // ---- boosts ----
   let boosted = score;
-  if (post && post.pinned) boosted = clamp01(boosted + 0.20);
-  if (post && post.meta && post.meta.status === "saved") boosted = clamp01(boosted + 0.10);
+  if (post?.pinned) boosted = clamp01(boosted + 0.20);
+  if (post?.meta && post.meta.status === "saved") boosted = clamp01(boosted + 0.10);
   if (post && post.surface === "explore" && outlierRaw < 1.5) {
     // Explore firehose: dampen unless the post has cleared a meaningful bar.
     boosted = boosted * 0.7;
@@ -146,14 +146,14 @@ export function topByRelevance(posts, userPrefs, n) {
 
 function mergePrefs(p) {
   const m = { ...DEFAULT_PREFS, ...(p || {}) };
-  m.formatWeights = { ...DEFAULT_PREFS.formatWeights, ...(p && p.formatWeights) };
-  m.niches = Array.isArray(p && p.niches)
+  m.formatWeights = { ...DEFAULT_PREFS.formatWeights, ...(p?.formatWeights) };
+  m.niches = Array.isArray(p?.niches)
     ? p.niches.map((n) => String(n).toLowerCase().trim()).filter(Boolean)
     : [];
-  m.nicheStrictness = Number.isFinite(p && p.nicheStrictness)
+  m.nicheStrictness = Number.isFinite(p?.nicheStrictness)
     ? clamp01(p.nicheStrictness)
     : DEFAULT_PREFS.nicheStrictness;
-  m.weights = { ...DEFAULT_PREFS.weights, ...((p && p.weights) || {}) };
+  m.weights = { ...DEFAULT_PREFS.weights, ...((p?.weights) || {}) };
   return m;
 }
 

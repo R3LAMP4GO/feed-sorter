@@ -1,6 +1,3 @@
-// Click the CSV button, intercept the download, parse the body, and
-// verify both row count and the filename pattern
-//   ig_{scope}[_surface]_{sortPart}[_range]_{rows}_{YYYY-MM-DD_HHMM}.csv
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { startStubServer } from "./stub-ig-server.mjs";
@@ -19,8 +16,8 @@ test.afterAll(async () => {
   if (server) await server.stop();
 });
 
-// Minimal CSV parser tolerant to quoted fields with embedded commas/newlines.
 const parseCSV = (text) => {
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   const rows = [];
   let row = [];
   let cur = "";
@@ -44,51 +41,47 @@ const parseCSV = (text) => {
   return rows.filter((r) => r.length > 1 || (r.length === 1 && r[0] !== ""));
 };
 
-test("csv: download has expected rows and filename pattern", async () => {
+test("csv: custom export supports sort and rich column selection", async () => {
   const page = await ext.context.newPage();
   await page.goto(`${server.origin}/zachking/`, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => !!window.fs, null, { timeout: 10_000 });
 
-  // Wait for fixtures (4 posts).
   await expect
-    .poll(async () => (await page.evaluate(() => window.fs.posts())).length, {
-      timeout: 8_000,
-    })
+    .poll(async () => (await page.evaluate(() => window.fs.posts())).length, { timeout: 8_000 })
     .toBeGreaterThanOrEqual(4);
 
-  const expectedRows = await page.evaluate(
-    () => window.fs.posts().then((p) => p.length)
-  );
+  await page.locator('[data-act="csv-custom"]').click();
+  await expect(page.locator(".fs-modal")).toBeVisible();
+  await page.locator("[data-csv-preset='transcripts']").click();
+  await page.locator("[data-csv-sort]").selectOption("views");
 
   const downloadPromise = page.waitForEvent("download", { timeout: 5_000 });
-  await page.locator('[data-act="csv"]').click();
+  await page.locator('[data-act="csv-download"]').click();
   const download = await downloadPromise;
 
-  // Filename pattern: ig_zachking[_surface]_outlier-likes[_range]_{rows}_YYYY-MM-DD_HHMM.csv
-  const name = download.suggestedFilename();
-  expect(name).toMatch(
-    /^ig_zachking(?:_[a-z]+)?_[a-z-]+(?:_[a-z0-9]+)?_(\d+)_\d{4}-\d{2}-\d{2}_\d{4}\.csv$/
-  );
-  const rowsInName = Number.parseInt(name.match(/_(\d+)_\d{4}-\d{2}-\d{2}/)[1], 10);
-  expect(rowsInName).toBe(expectedRows);
-
-  // Read & parse the file body.
-  const path = await download.path();
-  expect(path).toBeTruthy();
-  const text = readFileSync(path, "utf8");
+  expect(download.suggestedFilename()).toContain("_views_");
+  const text = readFileSync(await download.path(), "utf8");
+  expect(text.charCodeAt(0)).toBe(0xfeff);
   const rows = parseCSV(text);
-
-  // 1 header + N data rows.
-  expect(rows.length).toBe(expectedRows + 1);
-  expect(rows[0][0]).toBe("rank");
-  expect(rows[0]).toContain("author");
-  expect(rows[0]).toContain("id");
-
-  // Every data row's author column should be zachking.
-  const authorIdx = rows[0].indexOf("author");
-  for (let i = 1; i < rows.length; i++) {
-    expect(rows[i][authorIdx]).toBe("zachking");
-  }
+  expect(rows[0]).toContain("Creator name");
+  expect(rows[0]).toContain("Category");
+  expect(rows[0]).toContain("Niche");
+  expect(rows[0]).toContain("Format");
+  expect(rows[0]).toContain("Content format");
+  expect(rows[0]).toContain("Visual format");
+  expect(rows[0]).toContain("Category confidence");
+  expect(rows[0]).toContain("Format confidence");
+  expect(rows[0]).toContain("Classification source");
+  expect(rows[0]).toContain("Outlier score");
+  expect(rows[0]).toContain("Caption");
+  expect(rows[0]).toContain("Transcript");
+  expect(rows[0]).toContain("Transcript segments");
+  expect(rows[0]).toContain("Hook");
+  expect(rows[0]).toContain("Hook type");
+  expect(rows[0]).toContain("Middle/value summary");
+  expect(rows[0]).toContain("CTA");
+  expect(rows[0]).toContain("CTA type");
+  expect(rows[0]).toContain("URL");
 
   await page.close();
 });

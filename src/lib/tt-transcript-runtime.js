@@ -12,7 +12,7 @@
 //
 // Exposes window.FeedSorterTikTokTranscript.
 
-(function () {
+(() => {
   function decodeXmlEntities(s) {
     return String(s)
       .replace(/&amp;/g, '&')
@@ -20,7 +20,7 @@
       .replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'")
-      .replace(/&#(\d+);/g, function (_, n) { return String.fromCodePoint(Number(n)); });
+      .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)));
   }
 
   // VTT: lines like
@@ -40,12 +40,12 @@
         continue;
       }
       if (cur && ln.trim() && !/^WEBVTT/i.test(ln) && !/^NOTE\b/i.test(ln) && !/^\d+$/.test(ln.trim())) {
-        cur.text = (cur.text + ' ' + decodeXmlEntities(ln).replace(/<[^>]+>/g, '')).trim();
+        cur.text = (`${cur.text} ${decodeXmlEntities(ln).replace(/<[^>]+>/g, '')}`).trim();
       } else if (cur && !ln.trim()) {
         if (cur.text) { segments.push(cur); cur = null; }
       }
     }
-    if (cur && cur.text) segments.push(cur);
+    if (cur?.text) segments.push(cur);
     return { fullText: segments.map((s) => s.text).join(' ').trim(), segments };
   }
 
@@ -71,7 +71,7 @@
   function tsToS(ts) {
     const parts = String(ts).split(':');
     let s = 0;
-    for (const p of parts) s = s * 60 + parseFloat(p);
+    for (const p of parts) s = s * 60 + Number.parseFloat(p);
     return s;
   }
 
@@ -91,7 +91,7 @@
     const fmt = String((track && (track.captionFormat || track.Format)) || '').toLowerCase();
     if (!url) return null;
     const res = await fetch(url, { credentials: 'include' });
-    if (!res.ok) throw new Error('tt caption fetch ' + res.status);
+    if (!res.ok) throw new Error(`tt caption fetch ${res.status}`);
     const text = await res.text();
     if (fmt === 'webvtt' || fmt === 'vtt' || /^WEBVTT/i.test(text.trim())) return parseVtt(text);
     if (fmt === 'srt') return parseSrt(text);
@@ -118,7 +118,7 @@
         },
         (resp) => {
           if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-          if (!resp || !resp.ok) return reject(new Error((resp && resp.err) || 'upload-failed'));
+          if (!resp || !resp.ok) return reject(new Error((resp?.err) || 'upload-failed'));
           resolve(resp);
         },
       );

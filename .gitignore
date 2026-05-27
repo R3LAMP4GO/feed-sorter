@@ -27,3 +27,4 @@ apps/**/.turbo/
 apps/**/.env.local
 apps/**/.env
 sidecar/.venv/
+tmp/

@@ -50,14 +50,14 @@ export const computeDerived = (post, now = Date.now()) => {
 };
 
 export const vphSincePosted = (post, now = Date.now()) => {
-  const views = Number(post && post.views) || 0;
-  const created = Number(post && post.createTime) || 0;
+  const views = Number(post?.views) || 0;
+  const created = Number(post?.createTime) || 0;
   if (!views || !created) return 0;
   const ageHrs = Math.max(1, (now / 1000 - created) / 3600);
   return views / ageHrs;
 };
 
-export const cprOf = (post) => (Number(post && post.comments) || 0) / Math.max(Number(post && post.likes) || 0, 1) * 1000;
+export const cprOf = (post) => (Number(post?.comments) || 0) / Math.max(Number(post?.likes) || 0, 1) * 1000;
 
 export const enrichForSort = (post, now = Date.now()) => {
   const derived = computeDerived(post, now);
@@ -70,7 +70,7 @@ export const enrichForSort = (post, now = Date.now()) => {
   };
 };
 
-const numericDesc = (a, b, key) => (Number(b && b[key]) || 0) - (Number(a && a[key]) || 0);
+const numericDesc = (a, b, key) => (Number(b?.[key]) || 0) - (Number(a?.[key]) || 0);
 
 export const comparePosts = (a, b, sortKey) => {
   if (sortKey === "outlier") return numericDesc(a, b, "_score");

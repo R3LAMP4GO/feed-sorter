@@ -31,8 +31,8 @@
           return;
         }
         if (!resp || resp.ok === false) {
-          const e = new Error(String((resp && resp.err) || "no-response"));
-          if (resp && resp.status) e.status = resp.status;
+          const e = new Error(String((resp?.err) || "no-response"));
+          if (resp?.status) e.status = resp.status;
           reject(e);
           return;
         }
@@ -49,17 +49,17 @@
     try {
       const r = await send("llm.chat", payload || {});
       log("info", "bridge.chat.ok", {
-        model: payload && payload.model,
-        kind: payload && payload.kind,
-        durationMs: r && r.durationMs,
-        cached: !!(r && r.cached),
+        model: payload?.model,
+        kind: payload?.kind,
+        durationMs: r?.durationMs,
+        cached: !!(r?.cached),
         ms: Date.now() - t0,
       });
       return r;
     } catch (e) {
       log("warn", "bridge.chat.fail", {
-        kind: payload && payload.kind,
-        err: String(e && e.message || e),
+        kind: payload?.kind,
+        err: String(e?.message || e),
         ms: Date.now() - t0,
       });
       throw e;

@@ -85,7 +85,7 @@ const VOICE_SYSTEM = [
 
 const truncate = (s, n) => {
   const t = String(s || "").trim();
-  return t.length > n ? t.slice(0, n - 1).trimEnd() + "…" : t;
+  return t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t;
 };
 
 // Build the user-message context: top-N posts, each with its key engagement
@@ -99,7 +99,7 @@ export const buildVoicePrompt = (posts, { truncateChars = 500 } = {}) => {
       typeof p.likes === "number" ? `likes=${p.likes}` : null,
       typeof p.views === "number" && p.views ? `views=${p.views}` : null,
     ].filter(Boolean).join(" ");
-    const lines = [`--- POST ${i + 1}${stats ? " (" + stats + ")" : ""} ---`];
+    const lines = [`--- POST ${i + 1}${stats ? ` (${stats})` : ""} ---`];
     lines.push(`CAPTION: ${cap || "(none)"}`);
     if (tx) lines.push(`TRANSCRIPT: ${tx}`);
     return lines.join("\n");
@@ -130,13 +130,13 @@ const dedupeStrings = (arr, max) => {
 };
 
 const normalizeVoiceJson = (j) => ({
-  tone: String((j && j.tone) || "").toLowerCase().trim().slice(0, 80),
-  avgSentenceLen: Math.round(clampNum(j && j.avgSentenceLen, 1, 80, 12)),
-  signatureWords: dedupeStrings(j && j.signatureWords, 20),
-  emojiRate: Math.round(clampNum(j && j.emojiRate, 0, 100, 0) * 100) / 100,
-  openerPatterns: dedupeStrings(j && j.openerPatterns, 8),
-  closerPatterns: dedupeStrings(j && j.closerPatterns, 6),
-  CTAStyle: String((j && j.CTAStyle) || "").trim().slice(0, 200),
+  tone: String((j?.tone) || "").toLowerCase().trim().slice(0, 80),
+  avgSentenceLen: Math.round(clampNum(j?.avgSentenceLen, 1, 80, 12)),
+  signatureWords: dedupeStrings(j?.signatureWords, 20),
+  emojiRate: Math.round(clampNum(j?.emojiRate, 0, 100, 0) * 100) / 100,
+  openerPatterns: dedupeStrings(j?.openerPatterns, 8),
+  closerPatterns: dedupeStrings(j?.closerPatterns, 6),
+  CTAStyle: String((j?.CTAStyle) || "").trim().slice(0, 200),
 });
 
 // Pick the top-N posts for `username` from store, filtering by minScore.

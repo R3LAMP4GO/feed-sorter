@@ -49,7 +49,7 @@ export async function runClassifyFormat(payload: { postId: string }): Promise<vo
   const density = transcript ? speechDensity(transcript) : 0;
   const user = `Speech density: ${density.toFixed(1)} chars/sec.\nClassify the format. Return JSON only.`;
 
-  let format: string = 'unknown';
+  let format = 'unknown';
   try {
     const text = await chatVision({
       system: SYSTEM,

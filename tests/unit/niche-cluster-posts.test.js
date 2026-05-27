@@ -12,7 +12,9 @@ const COM = ["joke", "laugh", "skit", "improv", "sketch", "parody", "standup", "
 
 const stubEmbed = async (texts) => texts.map((t) => {
   const lo = String(t).toLowerCase();
-  let f = 0, n = 0, c = 0;
+  let f = 0;
+  let n = 0;
+  let c = 0;
   for (const w of FIT) if (lo.includes(w)) f++;
   for (const w of FIN) if (lo.includes(w)) n++;
   for (const w of COM) if (lo.includes(w)) c++;
@@ -20,7 +22,7 @@ const stubEmbed = async (texts) => texts.map((t) => {
 });
 
 const post = (over) => ({
-  id: "p_" + Math.random().toString(36).slice(2, 8),
+  id: `p_${Math.random().toString(36).slice(2, 8)}`,
   author: "anon",
   desc: "",
   transcript: "",
@@ -186,13 +188,14 @@ describe("labelClusters", () => {
 
     expect(calls.length).toBe(2); // ONE call per cluster
     expect(calls.every((c) => c.kind === "niche-label")).toBe(true);
-    expect(calls.every((c) => c.schema && c.schema.type === "string")).toBe(true);
-    // Each prompt embeds 3 numbered exemplar captions.
+    expect(calls.every((c) => c.schema && c.schema.type === "object" && c.schema.properties.label)).toBe(true);
+    // Each prompt embeds 3 numbered exemplars and asks for JSON, not a bare string.
     for (const c of calls) {
       const content = c.messages[0].content;
-      expect(content).toMatch(/1\. /);
-      expect(content).toMatch(/2\. /);
-      expect(content).toMatch(/3\. /);
+      expect(content).toContain('{"label":"1-3 word niche"}');
+      expect(content).toMatch(/1\./);
+      expect(content).toMatch(/2\./);
+      expect(content).toMatch(/3\./);
     }
     expect(labeled.length).toBe(2);
     expect(labeled[0].label).toBe("Fitness");
@@ -261,5 +264,58 @@ describe("labelClusters", () => {
       { id: "a2", label: "Cooking", basis: "tags" },
       { id: "a3", label: "Cooking", basis: "tags" },
     ]);
+  });
+
+  it("includes transcripts and format hints in the cluster label prompt", async () => {
+    const clusters = [
+      mkCluster(0, ["m1", "m2", "m3"], [v(1, 0, 0), v(0.9, 0.1, 0), v(0.8, 0.2, 0)]),
+    ];
+    const getPost = async (id) => ({
+      id,
+      desc: "short caption",
+      transcript: "Discipline and mindset are what keep you showing up when motivation fades.",
+      visualFormat: "talking-head",
+      hashtags: ["motivation", "mindset"],
+    });
+    const calls = [];
+    const chat = async (req) => { calls.push(req); return { json: { label: "Motivational" } }; };
+    const out = await labelClusters(clusters, { chat, getPost });
+    expect(out[0].label).toBe("Motivational");
+    expect(calls[0].messages[0].content).toContain("TRANSCRIPT:");
+    expect(calls[0].messages[0].content).toContain("FORMAT: talking-head");
+    expect(calls[0].messages[0].content).toContain("#motivation #mindset");
+  });
+
+  it("retries as plain text when structured-output parsing fails", async () => {
+    const clusters = [
+      mkCluster(0, ["a1", "a2", "a3"], [v(1, 0, 0), v(0.9, 0.1, 0), v(0.8, 0.2, 0)]),
+    ];
+    const getPost = async (id) => ({ id, desc: "protein workout reps fitness training" });
+    const calls = [];
+    const chat = async (req) => {
+      calls.push(req);
+      if (req.schema) throw new Error("llm.chat: structured-output JSON parse failed");
+      return { text: "Fitness" };
+    };
+    const out = await labelClusters(clusters, { chat, getPost });
+    expect(out[0].label).toBe("Fitness");
+    expect(calls).toHaveLength(2);
+    expect(calls[0].schema.type).toBe("object");
+    expect(calls[1].schema).toBeUndefined();
+  });
+
+  it("falls back to deterministic transcript keyword labels when LLM labeling fails", async () => {
+    const clusters = [
+      mkCluster(0, ["m1", "m2", "m3"], [v(1, 0, 0), v(0.9, 0.1, 0), v(0.8, 0.2, 0)]),
+    ];
+    const getPost = async (id) => ({
+      id,
+      desc: "",
+      transcriptSegments: [{ text: "Build discipline, confidence, and better habits for success." }],
+      hashtags: ["fyp"],
+    });
+    const chat = async () => { throw new Error("ollama unavailable"); };
+    const out = await labelClusters(clusters, { chat, getPost });
+    expect(out[0].label).toBe("Motivational");
   });
 });

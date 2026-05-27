@@ -21,7 +21,7 @@ function deriveAppUrl(apiBaseUrl) {
   try {
     const u = new URL(apiBaseUrl);
     if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') {
-      return 'http://' + u.hostname + ':3000';
+      return `http://${u.hostname}:3000`;
     }
     return DEFAULTS.appUrl;
   } catch (_) {
@@ -74,7 +74,7 @@ async function refreshConnection() {
     $('err').textContent = 'Session expired — please reconnect.';
   } else {
     setSignedOut();
-    $('err').textContent = r.err || ('API ' + (r.status || '?'));
+    $('err').textContent = r.err || (`API ${r.status || '?'}`);
   }
 }
 
@@ -126,17 +126,17 @@ $('openWeb').addEventListener('click', () => {
 });
 
 $('signin').addEventListener('click', () => {
-  chrome.tabs.create({ url: appUrl + '/connect' });
+  chrome.tabs.create({ url: `${appUrl}/connect` });
   window.close();
 });
 
 // Footer legal links — open the web app's Terms/Privacy pages in a new tab.
 $('linkTerms').addEventListener('click', () => {
-  chrome.tabs.create({ url: appUrl + '/terms' });
+  chrome.tabs.create({ url: `${appUrl}/terms` });
   window.close();
 });
 $('linkPrivacy').addEventListener('click', () => {
-  chrome.tabs.create({ url: appUrl + '/privacy' });
+  chrome.tabs.create({ url: `${appUrl}/privacy` });
   window.close();
 });
 
@@ -162,9 +162,7 @@ $('sync').addEventListener('click', async () => {
   $('sync').disabled = false;
   if (r.ok) {
     $('syncResult').textContent =
-      'Synced ' + (r.inserted || 0) + ' / ' + (r.total || 0) +
-      (r.dropped ? ' (' + r.dropped + ' dropped)' : '') +
-      ' in ' + (r.batches || 0) + ' batches';
+      `Synced ${r.inserted || 0} / ${r.total || 0}${r.dropped ? ` (${r.dropped} dropped)` : ''} in ${r.batches || 0} batches`;
   } else {
     $('syncResult').textContent = '';
     $('err').textContent = r.err || 'sync failed (open an IG/TT/YT tab first)';
@@ -191,7 +189,7 @@ $('saveSettings').addEventListener('click', async () => {
 async function refreshBackendStatus() {
   const r = await send('api.request', { path: '/v1/me' });
   if (r.ok && r.body) {
-    $('bsEngine').textContent = 'API ' + ((await send('api.config')).baseUrl || '?');
+    $('bsEngine').textContent = `API ${(await send('api.config')).baseUrl || '?'}`;
     $('bsTier').textContent = r.body.tier || '?';
   } else {
     $('bsTier').textContent = '(not signed in)';
@@ -199,9 +197,9 @@ async function refreshBackendStatus() {
   // Health probe
   const cfg = await send('api.config');
   try {
-    const res = await fetch((cfg.baseUrl || DEFAULTS.apiBase) + '/healthz', { credentials: 'omit' });
-    $('bsTranscribe').textContent = res.ok ? 'reachable' : 'http ' + res.status;
-  } catch (e) {
+    const res = await fetch(`${cfg.baseUrl || DEFAULTS.apiBase}/healthz`, { credentials: 'omit' });
+    $('bsTranscribe').textContent = res.ok ? 'reachable' : `http ${res.status}`;
+  } catch (_e) {
     $('bsTranscribe').textContent = 'unreachable';
   }
 }

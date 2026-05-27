@@ -72,7 +72,18 @@
       "edge_liked_by" in o;
     const hasShape =
       "code" in o || "shortcode" in o || "media_type" in o || "carousel_media" in o;
-    return hasStat && hasShape;
+    const hasMediaPayload =
+      "taken_at" in o ||
+      "taken_at_timestamp" in o ||
+      "display_url" in o ||
+      "thumbnail_url" in o ||
+      "thumbnail_src" in o ||
+      "video_versions" in o ||
+      "video_url" in o ||
+      "image_versions2" in o ||
+      (Array.isArray(o.carousel_media) && o.carousel_media.length > 0) ||
+      /^Graph(Image|Video|Sidecar)$/.test(String(o.__typename || ""));
+    return hasShape && (hasStat || hasMediaPayload);
   };
 
   const igCover = (m) => {
@@ -249,7 +260,7 @@
     if (tag === "ig-clips" || /\/clips\/user\//.test(url)) return "reels";
     if (tag === "ig-explore" || /\/discover\//.test(url)) return "explore";
     if (tag === "ig-feed" || /\/feed\/user\//.test(url)) return "profile";
-    if (tag === "ig-graphql" || /\/graphql\//.test(url)) return "graphql";
+    if (tag === "ig-graphql" || /\/(?:api\/graphql|graphql\/)/.test(url)) return "graphql";
     return "unknown";
   };
 
@@ -469,7 +480,7 @@
   // (mirrors how IG /graphql is refined into "reels"/"profile"/"explore").
   const ytResolveSurface = (urlSurface, pageScope) => {
     if (urlSurface === "shorts-feed" || urlSurface === "player" || urlSurface === "next") return "shorts-feed";
-    const k = pageScope && pageScope.kind;
+    const k = pageScope?.kind;
     if (k && k !== "other") return k;
     return urlSurface || "other";
   };
@@ -496,10 +507,10 @@
       // Re-shape into a partial post keyed by the videoId in pageScope so
       // the ingest merge folds likes/views/comments/createTime onto the
       // existing row from /player.
-      const nativeId = String((enrich && enrich.videoId) || (ps && ps.videoId) || "");
+      const nativeId = String((enrich?.videoId) || (ps?.videoId) || "");
       if (!nativeId) return [];
       return [{
-        id: "yt_" + nativeId,
+        id: `yt_${nativeId}`,
         nativeId,
         shortcode: nativeId,
         author: enrich.author || ps.username || "",
@@ -510,7 +521,7 @@
         isReel: true,
         cover: "",
         videoUrl: "",
-        url: "https://www.youtube.com/shorts/" + nativeId,
+        url: `https://www.youtube.com/shorts/${nativeId}`,
         surface: userSurface,
         platform: "youtube",
         audio: null,
@@ -533,9 +544,9 @@
       : "unknown";
 
   const ytLooksLikeMedia = (o) =>
-    !!(o && typeof o === "object" && (o.videoId || (o.videoDetails && o.videoDetails.videoId)));
+    !!(o && typeof o === "object" && (o.videoId || (o.videoDetails?.videoId)));
 
-  const ytToPost = (m, surface, pageScope) => {
+  const ytToPost = (m, _surface, pageScope) => {
     if (!m || typeof m !== "object") return null;
     if (m.videoDetails && typeof YT_NS.playerToPost === "function") {
       return YT_NS.playerToPost(m, pageScope || { kind: "other", username: null });
@@ -556,7 +567,7 @@
     kind: "scroll",
     useScrollHeightStall: true,
     advance(opts) {
-      const doc = (opts && opts.doc) || (typeof document !== "undefined" ? document : null);
+      const doc = (opts?.doc) || (typeof document !== "undefined" ? document : null);
       if (!doc || !doc.documentElement) return false;
       const w = doc.defaultView || (typeof window !== "undefined" ? window : null);
       if (!w || typeof w.scrollTo !== "function") return false;
@@ -570,7 +581,7 @@
     useScrollHeightStall: false,
     useIdleEnd: false,
     advance(opts) {
-      const doc = (opts && opts.doc) || (typeof document !== "undefined" ? document : null);
+      const doc = (opts?.doc) || (typeof document !== "undefined" ? document : null);
       if (!doc || typeof doc.querySelector !== "function") return false;
       for (const sel of YT_NEXT_BUTTON_SELECTORS) {
         const btn = doc.querySelector(sel);
@@ -580,7 +591,7 @@
         }
       }
       const w = doc.defaultView || (typeof window !== "undefined" ? window : null);
-      const height = Math.max(1, (w && w.innerHeight) || (doc.documentElement && doc.documentElement.clientHeight) || 900);
+      const height = Math.max(1, (w?.innerHeight) || (doc.documentElement?.clientHeight) || 900);
       const sentArrowDown = [doc.activeElement, doc.body, doc.documentElement, w]
         .map((target) => dispatchArrowDown(target))
         .some(Boolean);
@@ -611,7 +622,7 @@
   const buttonForSelector = (doc, selector) => {
     const el = doc.querySelector(selector);
     if (!el) return null;
-    return (el.closest && el.closest("button")) || el;
+    return (el.closest?.("button")) || el;
   };
 
   const isDisabledButton = (btn) =>
@@ -642,7 +653,7 @@
 
   const dispatchWheelDown = (doc, amount) => {
     const w = doc.defaultView || (typeof window !== "undefined" ? window : null);
-    const WheelEventCtor = w && w.WheelEvent ? w.WheelEvent : (typeof WheelEvent !== "undefined" ? WheelEvent : null);
+    const WheelEventCtor = w?.WheelEvent ? w.WheelEvent : (typeof WheelEvent !== "undefined" ? WheelEvent : null);
     if (!WheelEventCtor) return false;
     const targets = [];
     const add = (el) => {
@@ -661,8 +672,8 @@
       deltaMode: 0,
       bubbles: true,
       cancelable: true,
-      clientX: Math.floor(((w && w.innerWidth) || 1200) / 2),
-      clientY: Math.floor(((w && w.innerHeight) || 900) / 2),
+      clientX: Math.floor(((w?.innerWidth) || 1200) / 2),
+      clientY: Math.floor(((w?.innerHeight) || 900) / 2),
     };
     let sent = false;
     for (const target of targets) {
@@ -689,8 +700,8 @@
     const all = doc.querySelectorAll("body, html, div");
     for (const el of all) {
       if (candidates.length >= 80) break;
-      if (el && el.classList && el.classList.contains("fs-root")) continue;
-      const scrollable = ((el && el.scrollHeight) || 0) > ((el && el.clientHeight) || 0) + 20;
+      if (el?.classList?.contains("fs-root")) continue;
+      const scrollable = ((el?.scrollHeight) || 0) > ((el?.clientHeight) || 0) + 20;
       if (scrollable) candidates.push(el);
     }
     const seen = new Set();
@@ -714,7 +725,7 @@
     useScrollHeightStall: false,
     useIdleEnd: false,
     advance(opts) {
-      const doc = (opts && opts.doc) || (typeof document !== "undefined" ? document : null);
+      const doc = (opts?.doc) || (typeof document !== "undefined" ? document : null);
       if (!doc || typeof doc.querySelector !== "function") return false;
       let sawNextButton = false;
       for (const sel of TT_NEXT_BUTTON_SELECTORS) {
@@ -728,7 +739,7 @@
       }
       if (sawNextButton) return false;
       const w = doc.defaultView || (typeof window !== "undefined" ? window : null);
-      const height = Math.max(1, (w && w.innerHeight) || (doc.documentElement && doc.documentElement.clientHeight) || 900);
+      const height = Math.max(1, (w?.innerHeight) || (doc.documentElement?.clientHeight) || 900);
       const sentArrowDown = [doc.activeElement, doc.body, doc.documentElement, w]
         .map((target) => dispatchArrowDown(target))
         .some(Boolean);
@@ -832,7 +843,7 @@
   };
 
   const detectPlatform = (host, pathname) => {
-    const h = String(host == null ? (global.location && global.location.host) || "" : host).toLowerCase();
+    const h = String(host == null ? (global.location?.host) || "" : host).toLowerCase();
     if (/(^|\.)tiktok\.com$/.test(h)) return PLATFORMS.TIKTOK;
     if (/(^|\.)instagram\.com$/.test(h)) return PLATFORMS.INSTAGRAM;
     if (/(^|\.)youtube\.com$/.test(h)) return PLATFORMS.YOUTUBE;
@@ -843,13 +854,13 @@
     //   - /channel/<id>, /c/<name>, /user/<name> (legacy creator URLs)
     // Otherwise /@user or /foryou → TikTok. Localhost /explore is ambiguous
     // with IG stubs, so tests can opt into TikTok via ?platform=tiktok.
-    const p = String(pathname == null ? (global.location && global.location.pathname) || "" : pathname);
+    const p = String(pathname == null ? (global.location?.pathname) || "" : pathname);
     if (/^\/shorts\//.test(p) || /^\/feed\/shorts/.test(p)) return PLATFORMS.YOUTUBE;
     if (/^\/@[\w.-]+\/(shorts|videos|community|playlists|featured|streams|posts)\b/.test(p)) {
       return PLATFORMS.YOUTUBE;
     }
     if (/^\/(channel|c|user)\/[\w.-]+/.test(p)) return PLATFORMS.YOUTUBE;
-    const q = String((global.location && global.location.search) || "").toLowerCase();
+    const q = String((global.location?.search) || "").toLowerCase();
     if (/^\/@[\w.]/.test(p) || /^\/foryou/.test(p) || ((p === "/" || /^\/explore\b/.test(p)) && /(?:[?&])platform=tiktok(?:&|$)/.test(q))) {
       return PLATFORMS.TIKTOK;
     }
@@ -883,8 +894,8 @@
   // even if the content script's logInfo() comes much later (or never,
   // on an off-feed page that aborts boot).
   try {
-    const host = (global.location && global.location.host) || "(none)";
-    const path = (global.location && global.location.pathname) || "";
+    const host = (global.location?.host) || "(none)";
+    const path = (global.location?.pathname) || "";
     console.log(
       "%c[FS:platform]%c init platform=%s host=%s path=%s detected=%s",
       "color:#e1306c;font-weight:bold", "color:inherit",

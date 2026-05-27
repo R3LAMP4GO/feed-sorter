@@ -54,7 +54,7 @@ if (!existsSync(file)) {
 }
 
 const raw = JSON.parse(readFileSync(file, "utf8"));
-const posts = Array.isArray(raw) ? raw : (raw && raw.posts) || [];
+const posts = Array.isArray(raw) ? raw : (raw?.posts) || [];
 if (!posts.length) {
   console.error("No posts found in input.");
   process.exit(3);
@@ -63,7 +63,7 @@ if (!posts.length) {
 // ---------- group by author ----------
 const byAuthor = new Map();
 for (const p of posts) {
-  const a = String((p && p.author) || "").toLowerCase();
+  const a = String((p?.author) || "").toLowerCase();
   if (!a) continue;
   if (!byAuthor.has(a)) byAuthor.set(a, []);
   byAuthor.get(a).push(p);

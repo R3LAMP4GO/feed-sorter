@@ -44,14 +44,14 @@ export class RateLimiter {
     for (let i = 0; i < attempts; i++) {
       await this.wait();
       const r = await fn();
-      if (r && r.ok) return r;
-      const s = (r && r.status) || 0;
+      if (r?.ok) return r;
+      const s = (r?.status) || 0;
       const transient = s === 429 || (s >= 500 && s < 600) || s === 0;
       lastErr = r;
       if (!transient) return r;
       // honour Retry-After if present (seconds)
-      const ra = r && r.retryAfter ? Number(r.retryAfter) * 1000 : 0;
-      const backoff = Math.max(ra, baseMs * Math.pow(2, i));
+      const ra = r?.retryAfter ? Number(r.retryAfter) * 1000 : 0;
+      const backoff = Math.max(ra, baseMs * 2 ** i);
       await new Promise((res) => setTimeout(res, backoff));
     }
     return lastErr || { ok: false, status: 0, err: "exhausted" };

@@ -20,7 +20,7 @@ const tiktokPageFixture = (surface, page, maxPages = 2) => {
     item.id = String(native);
     item.video = { ...(item.video || {}), id: item.id };
     item.desc = `${surface} page ${pageNum} · ${item.desc || ""}`.trim();
-    if (item.author && item.author.uniqueId) item.author.uniqueId = `${item.author.uniqueId}_${pageNum}`;
+    if (item.author?.uniqueId) item.author.uniqueId = `${item.author.uniqueId}_${pageNum}`;
   }
   base.hasMore = pageNum < maxPages;
   base.cursor = String(pageNum * 60);
@@ -93,19 +93,24 @@ const exploreHTML = () => `<!doctype html>
 <div id="output">loading…</div>
 <script>
 let page = 0;
+const params = new URLSearchParams(location.search);
+const maxPages = Number(params.get('pages') || '2');
+const batch = Number(params.get('batch') || sessionStorage.getItem('ttExploreBatch') || '0');
+sessionStorage.setItem('ttExploreBatch', String(batch + 1));
 async function loadNext() {
   page += 1;
-  const r = await fetch('/api/explore/item_list/?page=' + page);
+  const r = await fetch('/api/explore/item_list/?page=' + page + '&pages=' + maxPages + '&batch=' + batch);
   const j = await r.json();
   const items = j.itemList || [];
   window.__lastExplore = j;
   window.__exploreFetches = page;
-  document.getElementById('output').textContent = 'loaded page ' + page + ' · ' + items.length + ' items';
-  if (page >= 2) document.getElementById('next-video').disabled = true;
+  window.__exploreBatch = batch;
+  document.getElementById('output').textContent = 'loaded batch ' + batch + ' page ' + page + ' · ' + items.length + ' items';
+  if (page >= maxPages) document.getElementById('next-video').disabled = true;
 }
 setTimeout(loadNext, 500);
 document.getElementById('next-video').addEventListener('click', () => {
-  if (page < 2) loadNext();
+  if (page < maxPages) loadNext();
 });
 </script>
 </body></html>`;
@@ -136,12 +141,17 @@ export const startStubServer = () =>
         return;
       }
       if (url.startsWith("/api/explore/item_list")) {
-        const page = new URL(url, "http://127.0.0.1").searchParams.get("page") || "1";
+        const params = new URL(url, "http://127.0.0.1").searchParams;
+        const page = params.get("page") || "1";
+        const maxPages = Number(params.get("pages") || "2");
+        const batch = Number(params.get("batch") || "0");
+        const pageNum = Number(page) || 1;
+        const fixturePage = String(pageNum + batch * maxPages);
         res.writeHead(200, {
           "Content-Type": "application/json",
           "x-feed-sorter-tag": "tt-explore",
         });
-        res.end(tiktokPageFixture("explore", page));
+        res.end(tiktokPageFixture("explore", fixturePage, maxPages * Math.max(1, batch + 1)));
         return;
       }
 
@@ -176,7 +186,7 @@ export const startStubServer = () =>
       }
 
       res.writeHead(404, { "Content-Type": "text/plain" });
-      res.end("not found: " + url);
+      res.end(`not found: ${url}`);
     });
 
     server.listen(0, "127.0.0.1", () => {

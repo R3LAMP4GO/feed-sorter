@@ -50,6 +50,16 @@
     }
   },
   {
+    "id": 15, "priority": 1,
+    "action": { "type": "modifyHeaders", "responseHeaders": [
+      { "header": "x-feed-sorter-tag", "operation": "set", "value": "ig-graphql" }
+    ]},
+    "condition": {
+      "urlFilter": "||instagram.com/api/graphql",
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  },
+  {
     "id": 6, "priority": 1,
     "action": { "type": "modifyHeaders", "responseHeaders": [
       { "header": "x-feed-sorter-tag", "operation": "set", "value": "tt-profile" }

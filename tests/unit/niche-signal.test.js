@@ -15,7 +15,7 @@ import {
 } from "../../src/lib/niche-signal.js";
 
 const mkPost = (over = {}) => ({
-  id: "p" + Math.random().toString(36).slice(2),
+  id: `p${Math.random().toString(36).slice(2)}`,
   author: "sarah.realtor",
   desc: "",
   likes: 100,
@@ -57,7 +57,7 @@ describe("pickNicheSignal cascade", () => {
   it("falls through to 'captions' when bio is too short", () => {
     const creator = mkCreator({ bio: "vibes" }); // 1 word
     const posts = Array.from({ length: 5 }, (_, i) => mkPost({
-      desc: `crushing my squat PR this week, hit 405 for 3 reps macros are key #fitness`,
+      desc: "crushing my squat PR this week, hit 405 for 3 reps macros are key #fitness",
       likes: 500 * (i + 1),
     }));
     const out = pickNicheSignal(creator, posts);

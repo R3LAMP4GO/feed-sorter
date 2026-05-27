@@ -11,14 +11,12 @@ import {
 const longTutorial = (id, n) => ({
   id,
   author: "tutorialcreator",
-  desc: "How to make sourdough bread — step 1: feed your starter. Step 2: autolyse. " +
-        `Iteration ${n}.`,
+  desc: `How to make sourdough bread — step 1: feed your starter. Step 2: autolyse. Iteration ${n}.`,
 });
 const longStory = (id, n) => ({
   id,
   author: "storycreator",
-  desc: "When I was 23 I quit my job. I had nothing saved. I lived out of a hostel. " +
-        `Last year I went home. I learned a lot. #storytime ${n}`,
+  desc: `When I was 23 I quit my job. I had nothing saved. I lived out of a hostel. Last year I went home. I learned a lot. #storytime ${n}`,
 });
 const captionless = (id, author) => ({ id, author, desc: "" });
 
